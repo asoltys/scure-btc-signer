@@ -376,7 +376,32 @@ export const RawInput = P.struct({
   sequence: P.U32LE, // ?
 });
 
+export const ConfidentialAsset = P.wrap({
+    encodeStream: () => {},
+    decodeStream: (r) => {
+        r.byte();
+        return 32;
+    },
+});
+
+export const ConfidentialValue = P.wrap({
+    encodeStream: () => {},
+    decodeStream: (r): bigint => {
+        const version = r.byte();
+        return (version === 1) ? 8n : 32n;
+    },
+});
+
+export const ConfidentialNonce = P.wrap({
+    encodeStream: () => {},
+    decodeStream: (r) => {
+        const version = r.byte();
+        return [1,2,3].includes(version) ? 32 : version;
+    },
+});
+
 export const RawOutput = P.struct({ amount: P.U64LE, script: VarBytes });
+  export const ConfidentialOutput = P.struct({ asset: P.bytes(33), value: P.bytes(ConfidentialValue), nonce: P.bytes(ConfidentialNonce), script: VarBytes });
 const EMPTY_OUTPUT: P.UnwrapCoder<typeof RawOutput> = {
   amount: 0xffffffffffffffffn,
   script: P.EMPTY,
@@ -384,6 +409,12 @@ const EMPTY_OUTPUT: P.UnwrapCoder<typeof RawOutput> = {
 
 // SegWit v0 stack of witness buffers
 export const RawWitness = P.array(CompactSizeLen, VarBytes);
+export const ConfidentialInput = P.struct({
+  issuanceRangeProof: VarBytes,
+  inflationRangeProof: VarBytes,
+  witness: RawWitness,
+  pegInWitness: RawWitness,
+});
 
 // https://en.bitcoin.it/wiki/Protocol_documentation#tx
 const _RawTx = P.struct({
@@ -391,7 +422,7 @@ const _RawTx = P.struct({
   segwitFlag: P.flag(new Uint8Array([0x00, 0x01])),
   inputs: BTCArray(RawInput),
   outputs: BTCArray(RawOutput),
-  witnesses: P.flagged('segwitFlag', P.array('inputs/length', RawWitness)),
+  witnesses: P.flagged('segwitFlag', P.array('inputs/length', ConfidentialInput)),
   // < 500000000	Block number at which this transaction is unlocked
   // >= 500000000	UNIX timestamp at which this transaction is unlocked
   // Handled as part of PSBTv2
@@ -538,7 +569,7 @@ const PSBTOutput = {
   redeemScript:       [0x00, false,         BytesInf,        [],  [0, 2], false],
   witnessScript:      [0x01, false,         BytesInf,        [],  [0, 2], false],
   bip32Derivation:    [0x02, PubKeyECDSA,   BIP32Der,        [],  [0, 2], false],
-  amount:             [0x03, false,         P.I64LE,         [2], [2],    true],
+  amount:             [0x03, false,         ConfidentialValue,         [2], [2],    true],
   script:             [0x04, false,         BytesInf,        [2], [2],    true],
   tapInternalKey:     [0x05, false,         PubKeySchnorr,   [],  [0, 2], false],
   tapTree:            [0x06, false,         tapTree,         [],  [0, 2], false],
@@ -1606,7 +1637,7 @@ export type TransactionOutputRequired = {
 function outputBeforeSign(i: TransactionOutput): TransactionOutputRequired {
   if (i.script === undefined || i.amount === undefined)
     throw new Error('Transaction/output: script and amount required');
-  return { script: i.script, amount: i.amount };
+  return { ...i, script: i.script, amount: i.amount };
 }
 
 export const TAP_LEAF_VERSION = 0xc0;
@@ -1726,7 +1757,7 @@ export class Transaction {
     tx.inputs = parsed.inputs;
     if (parsed.witnesses) {
       for (let i = 0; i < parsed.witnesses.length; i++)
-        tx.inputs[i].finalScriptWitness = parsed.witnesses[i];
+        tx.inputs[i].finalScriptWitness = parsed.witnesses[i].witness
     }
     return tx;
   }
