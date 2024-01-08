@@ -377,31 +377,36 @@ export const RawInput = P.struct({
 });
 
 export const ConfidentialAsset = P.wrap({
-    encodeStream: () => {},
-    decodeStream: (r) => {
-        r.byte();
-        return 32;
-    },
+  encodeStream: () => {},
+  decodeStream: (r) => {
+    r.byte();
+    return 32;
+  },
 });
 
 export const ConfidentialValue = P.wrap({
-    encodeStream: () => {},
-    decodeStream: (r): bigint => {
-        const version = r.byte();
-        return (version === 1) ? 8n : 32n;
-    },
+  encodeStream: () => {},
+  decodeStream: (r): bigint => {
+    const version = r.byte();
+    return version === 1 ? 8n : 32n;
+  },
 });
 
 export const ConfidentialNonce = P.wrap({
-    encodeStream: () => {},
-    decodeStream: (r) => {
-        const version = r.byte();
-        return [1,2,3].includes(version) ? 32 : version;
-    },
+  encodeStream: () => {},
+  decodeStream: (r) => {
+    const version = r.byte();
+    return [1, 2, 3].includes(version) ? 32 : version;
+  },
 });
 
 export const RawOutput = P.struct({ amount: P.U64LE, script: VarBytes });
-  export const ConfidentialOutput = P.struct({ asset: P.bytes(33), value: P.bytes(ConfidentialValue), nonce: P.bytes(ConfidentialNonce), script: VarBytes });
+export const ConfidentialOutput = P.struct({
+  asset: P.bytes(33),
+  value: P.bytes(ConfidentialValue),
+  nonce: P.bytes(ConfidentialNonce),
+  script: VarBytes,
+});
 const EMPTY_OUTPUT: P.UnwrapCoder<typeof RawOutput> = {
   amount: 0xffffffffffffffffn,
   script: P.EMPTY,
@@ -447,7 +452,7 @@ type PSBTKeyMapInfo = Readonly<
     any,
     readonly number[], // versionsRequiringInclusion
     readonly number[], // versionsAllowsInclusion
-    boolean // silentIgnore
+    boolean, // silentIgnore
   ]
 >;
 
@@ -1757,7 +1762,7 @@ export class Transaction {
     tx.inputs = parsed.inputs;
     if (parsed.witnesses) {
       for (let i = 0; i < parsed.witnesses.length; i++)
-        tx.inputs[i].finalScriptWitness = parsed.witnesses[i].witness
+        tx.inputs[i].finalScriptWitness = parsed.witnesses[i].witness;
     }
     return tx;
   }
