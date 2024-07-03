@@ -131,6 +131,9 @@ export const PSBTOutput = {
   tapTree:            [0x06, false,         tapTree,         [],  [0, 2], false],
   tapBip32Derivation: [0x07, PubKeySchnorr, TaprootBIP32Der, [],  [0, 2], false],
   proprietary:        [0xfc, BytesInf,      BytesInf,        [],  [0, 2], false],
+  asset:              [0xfc, false,         BytesInf,        [2],  [2], true],
+  value:              [0xfc, false,         BytesInf,        [2],  [2], true],
+  nonce:              [0xfc, false,         BytesInf,        [2],  [2], true],
 } as const;
 
 // Can be modified even on signed input
@@ -334,6 +337,9 @@ export const PSBTOutputCoder = P.validate(PSBTKeyMap(PSBTOutput), (o) => {
 export type TransactionOutput = P.UnwrapCoder<typeof PSBTOutputCoder>;
 export type TransactionOutputUpdate = ExtendType<TransactionOutput, { script?: string }>;
 export type TransactionOutputRequired = {
+  asset: Bytes,
+  value: Bytes,
+  nonce: Bytes,
   script: Bytes;
   amount: bigint;
 };

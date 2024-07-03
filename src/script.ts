@@ -215,7 +215,33 @@ export const RawInput = P.struct({
   sequence: P.U32LE, // ?
 });
 
-export const RawOutput = P.struct({ amount: P.U64LE, script: VarBytes });
+export const ConfidentialAsset = P.wrap({
+    encodeStream: (w) => { 
+      w.byte(0x01)
+    },
+    decodeStream: (r) => {
+        r.byte();
+        return 32;
+    },
+});
+
+export const ConfidentialNonce = P.wrap({
+    encodeStream: (w) => {
+      w.byte(0x00)
+    },
+    decodeStream: (r) => {
+        const version = r.byte();
+        return [1, 2, 3].includes(version) ? 32 : version;
+    },
+});
+
+export const RawOutput = P.struct({
+    amount: P.U64LE,
+    asset: P.bytes(ConfidentialAsset, true),
+    value: P.bytes(9),
+    nonce: P.bytes(ConfidentialNonce),
+    script: VarBytes,
+});
 
 // https://en.bitcoin.it/wiki/Protocol_documentation#tx
 const _RawTx = P.struct({

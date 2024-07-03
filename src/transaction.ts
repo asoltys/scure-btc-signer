@@ -10,7 +10,10 @@ import { getInputType, toVsize, normalizeInput, getPrevOut } from './utxo.js'; /
 
 const EMPTY32 = new Uint8Array(32);
 const EMPTY_OUTPUT: P.UnwrapCoder<typeof RawOutput> = {
+  asset: P.EMPTY,
+  value: P.EMPTY,
   amount: 0xffffffffffffffffn,
+  nonce: P.EMPTY,
   script: P.EMPTY,
 };
 
@@ -125,9 +128,9 @@ export type TransactionInputRequired = {
 
 // Force check amount/script
 function outputBeforeSign(i: psbt.TransactionOutput): psbt.TransactionOutputRequired {
-  if (i.script === undefined || i.amount === undefined)
+  if (i.script === undefined || i.amount === undefined || i.asset === undefined || i.value === undefined || i.nonce === undefined)
     throw new Error('Transaction/output: script and amount required');
-  return { script: i.script, amount: i.amount };
+  return { asset: i.asset, value: i.value, nonce: i.nonce, script: i.script, amount: i.amount };
 }
 
 // Force check index/txid/sequence
