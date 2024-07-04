@@ -15,11 +15,12 @@ export {
 // prettier-ignore
 export {
   OP, RawTx, CompactSize,
-  Script, ScriptNum, ScriptType, MAX_SCRIPT_BYTE_LENGTH,
+  Script, ScriptNum, MAX_SCRIPT_BYTE_LENGTH,
 } from './script.js';
+export type { ScriptType } from './script.js';
 export { Transaction } from './transaction.js';
 export { getInputType, selectUTXO } from './utxo.js';
-export { NETWORK, TEST_NETWORK, TAPROOT_UNSPENDABLE_KEY } from './utils.js';
+export { NETWORK, REGTEST_NETWORK, TEST_NETWORK, TAPROOT_UNSPENDABLE_KEY } from './utils.js';
 
 export const utils = {
   isBytes,
@@ -34,9 +35,10 @@ export const utils = {
 // prettier-ignore
 export {
   Address, getAddress, WIF,
-  OptScript, CustomScript,
   taprootListToTree, OutScript, _sortPubkeys, sortedMultisig, combinations
 } from './payment.js'; // remove
+export type { OptScript, CustomScript } from './payment.js';
+
 export { _DebugPSBT, TaprootControlBlock } from './psbt.js'; // remove
 export { Decimal, bip32Path, SigHash, PSBTCombine, DEFAULT_SEQUENCE } from './transaction.js'; // remove
 export { _cmpBig, _Estimator } from './utxo.js';

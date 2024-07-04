@@ -1,10 +1,12 @@
 import * as P from 'micro-packed';
 import { hex } from '@scure/base';
 
-import { Address, CustomScript, OutScript, checkScript, tapLeafHash } from './payment.js';
+import { Address, OutScript, checkScript, tapLeafHash } from './payment.js';
+import type { CustomScript } from './payment.js';
 import * as psbt from './psbt.js'; // circular
 import { CompactSizeLen, RawOutput, RawTx, RawWitness, Script, VarBytes } from './script.js';
-import { NETWORK, Bytes, concatBytes, isBytes, equalBytes } from './utils.js';
+import { NETWORK, concatBytes, isBytes, equalBytes } from './utils.js';
+import type { Bytes } from './utils.js';
 import * as u from './utils.js';
 import { getInputType, toVsize, normalizeInput, getPrevOut } from './utxo.js'; // circular
 
@@ -128,7 +130,13 @@ export type TransactionInputRequired = {
 
 // Force check amount/script
 function outputBeforeSign(i: psbt.TransactionOutput): psbt.TransactionOutputRequired {
-  if (i.script === undefined || i.amount === undefined || i.asset === undefined || i.value === undefined || i.nonce === undefined)
+  if (
+    i.script === undefined ||
+    i.amount === undefined ||
+    i.asset === undefined ||
+    i.value === undefined ||
+    i.nonce === undefined
+  )
     throw new Error('Transaction/output: script and amount required');
   return { asset: i.asset, value: i.value, nonce: i.nonce, script: i.script, amount: i.amount };
 }
@@ -556,8 +564,13 @@ export class Transaction {
     }
     this.outputs[idx] = this.normalizeOutput(output, this.outputs[idx], allowedFields);
   }
-  addOutputAddress(address: string, amount: bigint, network = NETWORK): number {
-    return this.addOutput({ script: OutScript.encode(Address(network).decode(address)), amount });
+  addOutputAddress(address: string, amount: bigint, asset: string, network = NETWORK): number {
+    if (!asset) asset = network.assetHash;
+    return this.addOutput({
+      asset: hex.decode(asset),
+      script: OutScript.encode(Address(network).decode(address)),
+      amount,
+    });
   }
   // Utils
   get fee(): bigint {

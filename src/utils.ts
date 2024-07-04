@@ -96,17 +96,27 @@ export function taprootTweakPubkey(pubKey: Uint8Array, h: Uint8Array): [Uint8Arr
 export const TAPROOT_UNSPENDABLE_KEY = sha256(Point.BASE.toRawBytes(false));
 
 export const NETWORK = {
-  bech32: 'bc',
-  pubKeyHash: 0x00,
-  scriptHash: 0x05,
+  bech32: 'ex',
+  pubKeyHash: 0x39,
+  scriptHash: 0x27,
   wif: 0x80,
+  assetHash: '6f0279e9ed041c3d710a9f57d0c02928416460c4b722ae3457a11eec381c526d',
 };
 
 export const TEST_NETWORK: typeof NETWORK = {
-  bech32: 'tb',
-  pubKeyHash: 0x6f,
-  scriptHash: 0xc4,
+  bech32: 'tex',
+  pubKeyHash: 0x24,
+  scriptHash: 0x13,
   wif: 0xef,
+  assetHash: '144c654344aa716d6f3abcc1ca90e5641e4e2a7f633bc09fe3baf64585819a49',
+};
+
+export const REGTEST_NETWORK: typeof NETWORK = {
+  bech32: "ert",
+  pubKeyHash: 0xeb,
+  scriptHash: 0x4b,
+  wif: 0xef,
+  assetHash: "5ac9f65c0efcc4775e0baec4ec03abdde22473cd3cf33c0419ca290e0751b225"
 };
 
 // Exported for tests, internal method
@@ -117,3 +127,5 @@ export function compareBytes(a: Bytes, b: Bytes) {
   for (let i = 0; i < len; i++) if (a[i] != b[i]) return Math.sign(a[i] - b[i]);
   return Math.sign(a.length - b.length);
 }
+
+

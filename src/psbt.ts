@@ -2,7 +2,8 @@ import { hex } from '@scure/base';
 import * as P from 'micro-packed';
 import { CompactSize, CompactSizeLen, RawOutput, RawTx, RawWitness, VarBytes } from './script.js';
 import { Transaction } from './transaction.js'; // circular
-import { Bytes, compareBytes, PubT, validatePubkey, equalBytes } from './utils.js';
+import { compareBytes, PubT, validatePubkey, equalBytes } from './utils.js';
+import type { Bytes } from './utils.js';
 
 // PSBT BIP174, BIP370, BIP371
 
