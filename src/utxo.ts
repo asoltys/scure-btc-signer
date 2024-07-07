@@ -7,6 +7,7 @@ import { CompactSizeLen, RawOutput, RawTx, RawWitness, Script, VarBytes } from '
 import { DEFAULT_SEQUENCE, inputBeforeSign, SignatureHash, Transaction } from './transaction.js'; // circular
 import type { TxOpts } from './transaction.js';
 import {
+  val2amt,
   NETWORK,
   compareBytes,
   equalBytes,
@@ -14,8 +15,7 @@ import {
   TAPROOT_UNSPENDABLE_KEY,
   sha256,
 } from './utils.js';
-import type { 
-  Bytes } from "./utils.js";
+import type { Bytes } from './utils.js';
 import { validatePubkey, PubT } from './utils.js';
 
 // Normalizes input
@@ -58,6 +58,10 @@ export function normalizeInput(
   else if (res.witnessUtxo) prevOut = res.witnessUtxo;
   if (prevOut && !disableScriptCheck)
     checkScript(prevOut && prevOut.script, res.redeemScript, res.witnessScript);
+  res.witness = i.witness || [new Uint8Array([])]
+  res.pegInWitness = i.pegInWitness || [new Uint8Array([])]
+  res.issuanceRangeProof = i.issuanceRangeProof || new Uint8Array([])
+  res.inflationRangeProof = i.inflationRangeProof || new Uint8Array([])
   return res;
 }
 
@@ -374,8 +378,8 @@ export class _Estimator {
       const inputType = getInputType(normalized, opts.allowLegacyWitnessUtxo);
       const prev = getPrevOut(normalized);
       const estimate = estimateInput(inputType, normalized, this.opts);
-      const value = prev.amount - opts.feePerByte * BigInt(toVsize(estimate.weight)); // value = amount-fee
-      return { inputType, normalized, amount: prev.amount, value, estimate };
+      const value = val2amt(prev.value) - opts.feePerByte * BigInt(toVsize(estimate.weight)); // value = amount-fee
+      return { inputType, normalized, amount: val2amt(prev.value), value, estimate };
     });
   }
   private checkInputIdx(idx: number) {

@@ -5,7 +5,7 @@ import { Address, OutScript, checkScript, tapLeafHash } from './payment.js';
 import type { CustomScript } from './payment.js';
 import * as psbt from './psbt.js'; // circular
 import { CompactSizeLen, RawOutput, RawTx, RawWitness, Script, VarBytes } from './script.js';
-import { NETWORK, concatBytes, isBytes, equalBytes } from './utils.js';
+import { amt2val, val2amt, NETWORK, concatBytes, isBytes, equalBytes } from './utils.js';
 import type { Bytes } from './utils.js';
 import * as u from './utils.js';
 import { getInputType, toVsize, normalizeInput, getPrevOut } from './utxo.js'; // circular
@@ -14,7 +14,6 @@ const EMPTY32 = new Uint8Array(32);
 const EMPTY_OUTPUT: P.UnwrapCoder<typeof RawOutput> = {
   asset: P.EMPTY,
   value: P.EMPTY,
-  amount: 0xffffffffffffffffn,
   nonce: P.EMPTY,
   script: P.EMPTY,
 };
@@ -27,6 +26,21 @@ interface HDKey {
   derive(path: string): HDKey;
   deriveChild(index: number): HDKey;
   sign(hash: Bytes): Bytes;
+}
+
+interface ConfidentialOutputFields {
+  surjectionProof: Uint8Array;
+  rangeProof: Uint8Array;
+}
+
+interface RawTx {
+  version: number;
+  segwitFlag: boolean;
+  inputs: any;
+  outputs: any;
+  lockTime: number;
+  witnesses: any;
+  outs: ConfidentialOutputFields[];
 }
 
 export type Signer = Bytes | HDKey;
@@ -120,38 +134,56 @@ function getTaprootKeys(
   return { privKey, pubKey };
 }
 
+export type Witness = (Uint8Array | Uint8Array[])[];
+
 // User facing API with decoders
 export type TransactionInputRequired = {
   txid: Bytes;
   index: number;
   sequence: number;
   finalScriptSig: Bytes;
+  witness: Witness;
+  issuanceRangeProof: Bytes;
+  inflationRangeProof: Bytes;
+  pegInWitness: Witness;
 };
 
 // Force check amount/script
 function outputBeforeSign(i: psbt.TransactionOutput): psbt.TransactionOutputRequired {
   if (
     i.script === undefined ||
-    i.amount === undefined ||
     i.asset === undefined ||
     i.value === undefined ||
     i.nonce === undefined
-  )
-    throw new Error('Transaction/output: script and amount required');
-  return { asset: i.asset, value: i.value, nonce: i.nonce, script: i.script, amount: i.amount };
+  ) {
+    throw new Error('Transaction/output: script, asset, value and nonce required');
+  }
+  return { asset: i.asset, value: i.value, nonce: i.nonce, script: i.script };
 }
 
 // Force check index/txid/sequence
 export function inputBeforeSign(i: psbt.TransactionInput): TransactionInputRequired {
-  if (i.txid === undefined || i.index === undefined)
-    throw new Error('Transaction/input: txid and index required');
+  if (
+    i.txid === undefined ||
+    i.index === undefined ||
+    i.issuanceRangeProof === undefined ||
+    i.inflationRangeProof === undefined ||
+    i.witness === undefined ||
+    i.pegInWitness === undefined
+  )
+    throw new Error('Transaction/input: txid, index, issuanceRangeProof, inflationRangeProof witness and pegInWitness required');
   return {
     txid: i.txid,
     index: i.index,
     sequence: def(i.sequence, DEFAULT_SEQUENCE),
     finalScriptSig: def(i.finalScriptSig, P.EMPTY),
+    witness: i.witness,
+    issuanceRangeProof: i.issuanceRangeProof,
+    inflationRangeProof: i.inflationRangeProof,
+    pegInWitness: i.pegInWitness,
   };
 }
+
 function cleanFinalInput(i: psbt.TransactionInput) {
   for (const _k in i) {
     const k = _k as keyof psbt.TransactionInput;
@@ -250,10 +282,12 @@ export class Transaction {
     for (const o of parsed.outputs) tx.addOutput(o);
     tx.outputs = parsed.outputs;
     tx.inputs = parsed.inputs;
+
     if (parsed.witnesses) {
       for (let i = 0; i < parsed.witnesses.length; i++)
-        tx.inputs[i].finalScriptWitness = parsed.witnesses[i];
+        tx.inputs[i].witness = parsed.witnesses[i].witness;
     }
+
     return tx;
   }
   // PSBT
@@ -443,17 +477,47 @@ export class Transaction {
     return toVsize(this.weight);
   }
   toBytes(withScriptSig = false, withWitness = false) {
-    return RawTx.encode({
+    let tx: RawTx = {
       version: this.version,
-      lockTime: this.lockTime,
+      segwitFlag: withWitness && this.hasWitnesses,
       inputs: this.inputs.map(inputBeforeSign).map((i) => ({
         ...i,
-        finalScriptSig: (withScriptSig && i.finalScriptSig) || P.EMPTY,
+        witness: (withScriptSig && i.witness) || P.EMPTY,
+        issuanceRangeProof: new Uint8Array([]),
+        inflationRangeProof: new Uint8Array([]),
       })),
       outputs: this.outputs.map(outputBeforeSign),
-      witnesses: this.inputs.map((i) => i.finalScriptWitness || []),
-      segwitFlag: withWitness && this.hasWitnesses,
-    });
+      lockTime: this.lockTime,
+      witnesses: [],
+      outs: [],
+    };
+
+    if (withWitness && this.hasWitnesses) {
+      tx.witnesses = this.inputs.map(
+        ({
+          issuanceRangeProof = new Uint8Array(),
+          inflationRangeProof = new Uint8Array(),
+          witness = new Uint8Array(),
+          pegInWitness = new Uint8Array(),
+        }) => ({
+          issuanceRangeProof,
+          inflationRangeProof,
+          witness,
+          pegInWitness,
+        })
+      );
+      tx.outs = this.outputs.map(
+        ({ surjectionProof = new Uint8Array(), rangeProof = new Uint8Array() }) => ({
+          surjectionProof,
+          rangeProof,
+        })
+      );
+    } else {
+      tx.witnesses = [];
+      tx.outs = [];
+    }
+
+    return RawTx.encode(tx);
   }
   get unsignedTx(): Bytes {
     return this.toBytes(false, false);
@@ -527,12 +591,20 @@ export class Transaction {
     cur?: psbt.TransactionOutput,
     allowedFields?: (keyof typeof psbt.PSBTOutput)[]
   ): psbt.TransactionOutput {
-    let { amount, script } = o;
-    if (amount === undefined) amount = cur?.amount;
+    let { script, value } = o;
+    if (!value) throw new Error('Value must be defined');
+    let s = '';
+    for (let n of value) {
+      s += n.toString(16);
+    }
+
+    let amount = BigInt('0x' + s);
+    if (amount === undefined && cur?.amount) amount = cur?.amount;
     if (typeof amount !== 'bigint') throw new Error('amount must be bigint sats');
     if (typeof script === 'string') script = hex.decode(script);
     if (script === undefined) script = cur?.script;
     let res: psbt.PSBTKeyMapKeys<typeof psbt.PSBTOutput> = { ...cur, ...o, amount, script };
+    if (!(res.script?.length || res.nonce?.length)) return res;
     if (res.amount === undefined) delete res.amount;
     res = psbt.mergeKeyMap(psbt.PSBTOutput, res, cur, allowedFields);
     psbt.PSBTOutputCoder.encode(res);
@@ -546,6 +618,10 @@ export class Transaction {
       );
     }
     if (!this.opts.disableScriptCheck) checkScript(res.script, res.redeemScript, res.witnessScript);
+
+    res.value = amt2val(amount);
+    res.surjectionProof = new Uint8Array([]);
+    res.rangeProof = new Uint8Array([]);
     return res;
   }
   addOutput(o: psbt.TransactionOutputUpdate, _ignoreSignStatus = false): number {
@@ -564,25 +640,20 @@ export class Transaction {
     }
     this.outputs[idx] = this.normalizeOutput(output, this.outputs[idx], allowedFields);
   }
-  addOutputAddress(address: string, amount: bigint, asset: string, network = NETWORK): number {
+  addOutputAddress(address: string, amount: bigint, network = NETWORK, asset?: string): number {
     if (!asset) asset = network.assetHash;
     return this.addOutput({
       asset: hex.decode(asset),
+      nonce: new Uint8Array([]),
       script: OutScript.encode(Address(network).decode(address)),
-      amount,
+      value: amt2val(amount),
     });
   }
   // Utils
   get fee(): bigint {
-    let res = 0n;
-    for (const i of this.inputs) {
-      const prevOut = getPrevOut(i);
-      if (!prevOut) throw new Error('Empty input amount');
-      res += prevOut.amount;
-    }
-    const outputs = this.outputs.map(outputBeforeSign);
-    for (const o of outputs) res -= o.amount;
-    return res;
+    let feeOutput = this.outputs.find((o) => o.nonce && o.script?.length === 0);
+    if (!feeOutput?.value) throw new Error('No fee output');
+    return val2amt(feeOutput.value);
   }
 
   // Signing
@@ -760,7 +831,7 @@ export class Transaction {
       if (input.tapBip32Derivation) throw new Error('tapBip32Derivation unsupported');
       const prevOuts = this.inputs.map(getPrevOut);
       const prevOutScript = prevOuts.map((i) => i.script);
-      const amount = prevOuts.map((i) => i.amount);
+      const amount = prevOuts.map((i) => val2amt(i.value));
       let signed = false;
       let schnorrPub = u.pubSchnorr(privateKey);
       let merkleRoot = input.tapMerkleRoot || P.EMPTY;
@@ -839,7 +910,7 @@ export class Transaction {
         // If wpkh OR sh-wpkh, wsh-wpkh is impossible, so looks ok
         if (inputType.last.type === 'wpkh')
           script = OutScript.encode({ type: 'pkh', hash: inputType.last.hash });
-        hash = this.preimageWitnessV0(idx, script, sighash, prevOut.amount);
+        hash = this.preimageWitnessV0(idx, script, sighash, val2amt(prevOut.value));
       } else throw new Error(`Transaction/sign: unknown tx type: ${inputType.txType}`);
       const sig = u.signECDSA(hash, privateKey, this.opts.lowR);
       this.updateInput(
@@ -1016,7 +1087,8 @@ export class Transaction {
 
     if (!finalScriptSig && !finalScriptWitness) throw new Error('Unknown error finalizing input');
     if (finalScriptSig) input.finalScriptSig = finalScriptSig;
-    if (finalScriptWitness) input.finalScriptWitness = finalScriptWitness;
+    //if (finalScriptWitness) input.witness = [finalScriptWitness];
+    input.pegInWitness = [];
     cleanFinalInput(input);
   }
   finalize() {

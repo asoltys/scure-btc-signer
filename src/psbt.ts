@@ -99,17 +99,24 @@ export const PSBTInput = {
   tapInternalKey:         [0x17, false,               PubKeySchnorr,    [],  [0, 2], false],
   tapMerkleRoot:          [0x18, false,               Bytes32,          [],  [0, 2], false],
   proprietary:            [0xfc, BytesInf,            BytesInf,         [],  [0, 2], false],
+  issuanceRangeProof:     [0xfc, false,               BytesInf,         [],  [0, 2], false],
+  inflationRangeProof:    [0xfc, false,               BytesInf,         [],  [0, 2], false],
+  witness:                [0xfc, false,               RawWitness,         [],  [0, 2], false],
+  pegInWitness:           [0xfc, false,               RawWitness,         [],  [0, 2], false],
 } as const;
 // All other keys removed when finalizing
 export const PSBTInputFinalKeys: (keyof TransactionInput)[] = [
-  'txid',
-  'sequence',
-  'index',
-  'witnessUtxo',
-  'nonWitnessUtxo',
-  'finalScriptSig',
-  'finalScriptWitness',
-  'unknown',
+    'txid',
+    'sequence',
+    'index',
+    'witnessUtxo',
+    'nonWitnessUtxo',
+    'finalScriptSig',
+    'inflationRangeProof',
+    'issuanceRangeProof',
+    'witness',
+    'pegInWitness',
+    'unknown',
 ];
 
 // Can be modified even on signed input
@@ -135,6 +142,8 @@ export const PSBTOutput = {
   asset:              [0xfc, false,         BytesInf,        [2],  [2], true],
   value:              [0xfc, false,         BytesInf,        [2],  [2], true],
   nonce:              [0xfc, false,         BytesInf,        [2],  [2], true],
+  surjectionProof:    [0xfc, false,         BytesInf,        [2],  [2], false],
+  rangeProof:         [0xfc, false,         BytesInf,        [2],  [2], false],
 } as const;
 
 // Can be modified even on signed input
@@ -276,7 +285,7 @@ export const PSBTInputCoder = P.validate(PSBTKeyMap(PSBTInput), (i) => {
     const prevOut = i.nonWitnessUtxo.outputs[i.index];
     if (
       i.witnessUtxo &&
-      (!equalBytes(i.witnessUtxo.script, prevOut.script) || i.witnessUtxo.amount !== prevOut.amount)
+      (!equalBytes(i.witnessUtxo.script, prevOut.script) || i.witnessUtxo.value !== prevOut.value)
     )
       throw new Error('validateInput: witnessUtxo different from nonWitnessUtxo');
   }
@@ -342,7 +351,6 @@ export type TransactionOutputRequired = {
   value: Bytes,
   nonce: Bytes,
   script: Bytes;
-  amount: bigint;
 };
 
 const PSBTGlobalCoder = P.validate(PSBTKeyMap(PSBTGlobal), (g) => {

@@ -216,44 +216,62 @@ export const RawInput = P.struct({
 });
 
 export const ConfidentialAsset = P.wrap({
-    encodeStream: (w) => { 
-      w.byte(0x01)
-    },
-    decodeStream: (r) => {
-        r.byte();
-        return 32;
-    },
+  encodeStream: (w) => {
+    w.byte(0x01);
+  },
+  decodeStream: (r) => {
+    r.byte();
+    return 32;
+  },
 });
 
 export const ConfidentialNonce = P.wrap({
-    encodeStream: (w) => {
-      w.byte(0x00)
-    },
-    decodeStream: (r) => {
-        const version = r.byte();
-        return [1, 2, 3].includes(version) ? 32 : version;
-    },
+  encodeStream: (w) => {
+    w.byte(0x00);
+  },
+  decodeStream: (r) => {
+    const version = r.byte();
+    return [1, 2, 3].includes(version) ? 32 : version;
+  },
+});
+
+export const SegwitFlag = P.wrap({
+  encodeStream: (w, value) => {
+    value ? w.byte(0x1) : w.byte(0x0);
+  },
+  decodeStream: (r) => {
+    return !!r.byte();
+  },
 });
 
 export const RawOutput = P.struct({
-    amount: P.U64LE,
-    asset: P.bytes(ConfidentialAsset, true),
-    value: P.bytes(9),
-    nonce: P.bytes(ConfidentialNonce),
-    script: VarBytes,
+  asset: P.bytes(ConfidentialAsset, true),
+  value: P.bytes(9),
+  nonce: P.bytes(ConfidentialNonce),
+  script: VarBytes,
+});
+
+const ConfidentialInputFields = P.struct({
+  issuanceRangeProof: VarBytes,
+  inflationRangeProof: VarBytes,
+  witness: RawWitness,
+  pegInWitness: RawWitness,
+});
+
+const ConfidentialOutputFields = P.struct({
+  surjectionProof: VarBytes,
+  rangeProof: VarBytes,
 });
 
 // https://en.bitcoin.it/wiki/Protocol_documentation#tx
 const _RawTx = P.struct({
   version: P.I32LE,
-  segwitFlag: P.flag(new Uint8Array([0x00, 0x01])),
+  segwitFlag: SegwitFlag,
   inputs: BTCArray(RawInput),
   outputs: BTCArray(RawOutput),
-  witnesses: P.flagged('segwitFlag', P.array('inputs/length', RawWitness)),
-  // < 500000000	Block number at which this transaction is unlocked
-  // >= 500000000	UNIX timestamp at which this transaction is unlocked
-  // Handled as part of PSBTv2
   lockTime: P.U32LE,
+  witnesses: P.flagged('segwitFlag', P.array('inputs/length', ConfidentialInputFields)),
+  outs: P.flagged('segwitFlag', P.array('outputs/length', ConfidentialOutputFields)),
 });
 
 function validateRawTx(tx: P.UnwrapCoder<typeof _RawTx>) {

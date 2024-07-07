@@ -129,3 +129,29 @@ export function compareBytes(a: Bytes, b: Bytes) {
 }
 
 
+export let amt2val = (n: BigInt) => {
+  let val = new Uint8Array(9);
+  let y = n.toString(16).padStart(16, '0'); // Convert to hex and pad to 16 characters
+
+  for (let j = 0; j < 8; j++) {
+    val[j + 1] = parseInt(y.slice(j * 2, j * 2 + 2), 16);
+  }
+
+  val[0] = 1; // Version indicator for raw value
+  return val;
+};
+
+export let val2amt = (val: Uint8Array) => {
+  if (val.length !== 9) {
+    throw new Error('Invalid input length. Expected 9 bytes.');
+  }
+
+  let y = '';
+
+  for (let j = 1; j < 9; j++) {
+    y += val[j].toString(16).padStart(2, '0');
+  }
+
+  return BigInt('0x' + y);
+};
+

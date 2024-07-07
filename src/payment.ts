@@ -1,8 +1,12 @@
-import { Coder, hex, bech32, bech32m, createBase58check } from '@scure/base';
+import { hex, bech32, bech32m, createBase58check } from '@scure/base';
+import type { Coder } from '@scure/base';
 import * as P from 'micro-packed';
-import { TaprootControlBlock, TransactionInput } from './psbt.js';
-import { OpToNum, ScriptType, Script, VarBytes } from './script.js';
-import { Bytes, NETWORK } from './utils.js';
+import { TaprootControlBlock } from './psbt.js';
+import type { TransactionInput } from './psbt.js';
+import { OpToNum, Script, VarBytes } from './script.js';
+import type { ScriptType } from './script.js';
+import { NETWORK } from './utils.js';
+import type { Bytes } from './utils.js';
 import * as u from './utils.js';
 
 // We need following items:
