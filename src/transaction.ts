@@ -450,10 +450,11 @@ export class Transaction {
 
   // Info utils
   get hasWitnesses(): boolean {
-    let out = false;
-    for (const i of this.inputs)
-      if (i.finalScriptWitness && i.finalScriptWitness.length) out = true;
-    return out;
+        let out = false;
+        for (const i of this.inputs)
+            if (i.witness && i.witness.length)
+                out = true;
+        return out;
   }
   // https://en.bitcoin.it/wiki/Weight_units
   get weight(): number {
@@ -482,9 +483,7 @@ export class Transaction {
       segwitFlag: withWitness && this.hasWitnesses,
       inputs: this.inputs.map(inputBeforeSign).map((i) => ({
         ...i,
-        witness: (withScriptSig && i.witness) || P.EMPTY,
-        issuanceRangeProof: new Uint8Array([]),
-        inflationRangeProof: new Uint8Array([]),
+        finalScriptSig: (withScriptSig && i.finalScriptSig) || P.EMPTY,
       })),
       outputs: this.outputs.map(outputBeforeSign),
       lockTime: this.lockTime,
@@ -593,12 +592,8 @@ export class Transaction {
   ): psbt.TransactionOutput {
     let { script, value } = o;
     if (!value) throw new Error('Value must be defined');
-    let s = '';
-    for (let n of value) {
-      s += n.toString(16);
-    }
 
-    let amount = BigInt('0x' + s);
+    let amount = val2amt(value);
     if (amount === undefined && cur?.amount) amount = cur?.amount;
     if (typeof amount !== 'bigint') throw new Error('amount must be bigint sats');
     if (typeof script === 'string') script = hex.decode(script);
@@ -695,14 +690,18 @@ export class Transaction {
     });
     return u.sha256x2(tmpTx, P.I32LE.encode(hashType));
   }
-  preimageWitnessV0(idx: number, prevOutScript: Bytes, hashType: number, amount: bigint) {
+  preimageWitnessV0(idx: number, prevOutScript: Bytes, hashType: number, value: Bytes) {
     const { isAny, isNone, isSingle } = unpackSighash(hashType);
     let inputHash = EMPTY32;
     let sequenceHash = EMPTY32;
+    let issuanceHash = EMPTY32;
     let outputHash = EMPTY32;
     const inputs = this.inputs.map(inputBeforeSign);
     const outputs = this.outputs.map(outputBeforeSign);
-    if (!isAny) inputHash = u.sha256x2(...inputs.map(TxHashIdx.encode));
+    if (!isAny) {
+      inputHash = u.sha256x2(...inputs.map(TxHashIdx.encode));
+      issuanceHash = u.sha256x2(...inputs.map(() => new Uint8Array([0])));
+    }
     if (!isAny && !isSingle && !isNone)
       sequenceHash = u.sha256x2(...inputs.map((i) => P.U32LE.encode(i.sequence)));
     if (!isSingle && !isNone) {
@@ -714,10 +713,11 @@ export class Transaction {
       P.I32LE.encode(this.version),
       inputHash,
       sequenceHash,
+      issuanceHash,
       P.bytes(32, true).encode(input.txid),
       P.U32LE.encode(input.index),
       VarBytes.encode(prevOutScript),
-      P.U64LE.encode(amount),
+      P.bytes(9).encode(value),
       P.U32LE.encode(input.sequence),
       outputHash,
       P.U32LE.encode(this.lockTime),
@@ -910,7 +910,7 @@ export class Transaction {
         // If wpkh OR sh-wpkh, wsh-wpkh is impossible, so looks ok
         if (inputType.last.type === 'wpkh')
           script = OutScript.encode({ type: 'pkh', hash: inputType.last.hash });
-        hash = this.preimageWitnessV0(idx, script, sighash, val2amt(prevOut.value));
+        hash = this.preimageWitnessV0(idx, script, sighash, prevOut.value);
       } else throw new Error(`Transaction/sign: unknown tx type: ${inputType.txType}`);
       const sig = u.signECDSA(hash, privateKey, this.opts.lowR);
       this.updateInput(
@@ -1087,7 +1087,7 @@ export class Transaction {
 
     if (!finalScriptSig && !finalScriptWitness) throw new Error('Unknown error finalizing input');
     if (finalScriptSig) input.finalScriptSig = finalScriptSig;
-    //if (finalScriptWitness) input.witness = [finalScriptWitness];
+    if (finalScriptWitness) input.witness = finalScriptWitness;
     input.pegInWitness = [];
     cleanFinalInput(input);
   }
