@@ -104,8 +104,32 @@ export function taprootTweakPubkey(pubKey: Bytes, h: Bytes): [Bytes, number] {
 // Also used by bitcoin-core and bitcoinjs-lib
 export const TAPROOT_UNSPENDABLE_KEY: Bytes = sha256(Point.BASE.toBytes(false));
 
-export type BTC_NETWORK = typeof NETWORK;
-export const NETWORK = {
+export type BTC_NETWORK = {
+  bech32: string;
+  pubKeyHash: number;
+  scriptHash: number;
+  wif: number;
+  blech32?: string;
+  confidentialPrefix?: number;
+  assetHash?: string;
+};
+
+export const NETWORK: BTC_NETWORK = {
+  bech32: 'bc',
+  pubKeyHash: 0x00,
+  scriptHash: 0x05,
+  wif: 0x80,
+};
+
+export const TEST_NETWORK: BTC_NETWORK = {
+  bech32: 'tb',
+  pubKeyHash: 0x6f,
+  scriptHash: 0xc4,
+  wif: 0xef,
+};
+
+// Liquid networks
+export const LIQUID_NETWORK: BTC_NETWORK = {
   bech32: 'ex',
   blech32: 'lq',
   pubKeyHash: 0x39,
@@ -115,7 +139,7 @@ export const NETWORK = {
   assetHash: '6f0279e9ed041c3d710a9f57d0c02928416460c4b722ae3457a11eec381c526d',
 };
 
-export const TEST_NETWORK: typeof NETWORK = {
+export const LIQUID_TEST_NETWORK: BTC_NETWORK = {
   bech32: 'tex',
   blech32: 'tlq',
   pubKeyHash: 0x24,
@@ -125,7 +149,7 @@ export const TEST_NETWORK: typeof NETWORK = {
   assetHash: '144c654344aa716d6f3abcc1ca90e5641e4e2a7f633bc09fe3baf64585819a49',
 };
 
-export const REGTEST_NETWORK: typeof NETWORK = {
+export const LIQUID_REGTEST_NETWORK: BTC_NETWORK = {
   bech32: 'ert',
   blech32: 'el',
   pubKeyHash: 0xeb,

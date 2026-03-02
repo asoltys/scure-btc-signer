@@ -43,7 +43,7 @@ export function fromConfidential(
   network = NETWORK
 ): ConfidentialResult {
   // Check segwit (blech32) first
-  if (address.toLowerCase().startsWith(network.blech32)) {
+  if (network.blech32 && address.toLowerCase().startsWith(network.blech32)) {
     return fromConfidentialSegwit(address, network);
   }
 
@@ -55,7 +55,7 @@ export function fromConfidential(
  * Quick check if an address is confidential (blech32 prefix or confidential base58 prefix).
  */
 export function isConfidential(address: string, network = NETWORK): boolean {
-  if (address.toLowerCase().startsWith(network.blech32)) return true;
+  if (network.blech32 && address.toLowerCase().startsWith(network.blech32)) return true;
   try {
     const data = base58check.decode(address);
     return data[0] === network.confidentialPrefix;
@@ -83,7 +83,7 @@ function toConfidentialSegwit(
     version = res.words[0];
   }
   const program = Uint8Array.from(bech32.fromWords(res.words.slice(1)));
-  return encodeAddress(program, blindingKey, network.blech32, version);
+  return encodeAddress(program, blindingKey, network.blech32!, version);
 }
 
 function fromConfidentialSegwit(
@@ -128,7 +128,7 @@ function toConfidentialLegacy(
 
   // Format: [confidentialPrefix, addrPrefix, blindingKey(33), hash(20)]
   const result = new Uint8Array(2 + 33 + 20);
-  result[0] = network.confidentialPrefix;
+  result[0] = network.confidentialPrefix!;
   result[1] = prefix;
   result.set(blindingKey, 2);
   result.set(payload.subarray(1), 35);

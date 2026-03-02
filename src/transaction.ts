@@ -881,8 +881,8 @@ export class Transaction {
     this.outputs[idx] = this.normalizeOutput(output, this.outputs[idx], allowedFields);
   }
   addOutputAddress(address: string, amount: bigint, network = NETWORK, asset?: string): number {
-    if (!asset) asset = network.assetHash;
-    const hashBytes = hex.decode(asset);
+    if (!asset) asset = network.assetHash!;
+    const hashBytes = hex.decode(asset!);
     // Construct 33-byte unconfidential asset: 0x01 prefix + reversed hash
     const assetBytes = new Uint8Array(33);
     assetBytes[0] = 0x01;

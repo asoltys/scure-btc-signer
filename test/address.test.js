@@ -136,9 +136,9 @@ const integrationFixtures = [
 ];
 
 function getNetwork(name) {
-  if (name === 'liquid') return btc.NETWORK;
-  if (name === 'testnet') return btc.TEST_NETWORK;
-  if (name === 'regtest') return btc.REGTEST_NETWORK;
+  if (name === 'liquid') return btc.LIQUID_NETWORK;
+  if (name === 'testnet') return btc.LIQUID_TEST_NETWORK;
+  if (name === 'regtest') return btc.LIQUID_REGTEST_NETWORK;
   throw new Error(`Unknown network: ${name}`);
 }
 

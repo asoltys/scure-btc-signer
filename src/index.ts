@@ -20,7 +20,11 @@ export {
 export type { ScriptType, IssuanceData } from './script.js';
 export { Transaction } from './transaction.js';
 export { getInputType, selectUTXO } from './utxo.js';
-export { NETWORK, REGTEST_NETWORK, TEST_NETWORK, TAPROOT_UNSPENDABLE_KEY } from './utils.js';
+export {
+  NETWORK, TEST_NETWORK, TAPROOT_UNSPENDABLE_KEY,
+  LIQUID_NETWORK, LIQUID_TEST_NETWORK, LIQUID_REGTEST_NETWORK,
+  LIQUID_REGTEST_NETWORK as REGTEST_NETWORK, // backward compat
+} from './utils.js';
 
 export const utils = {
   isBytes,
