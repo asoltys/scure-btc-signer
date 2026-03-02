@@ -4,14 +4,14 @@ import { hex } from '@scure/base';
 import { Address, OutScript, checkScript, tapLeafHash } from './payment.js';
 import type { CustomScript } from './payment.js';
 import * as psbt from './psbt.js'; // circular
-import { CompactSizeLen, RawOutput, RawTx, RawWitness, Script, VarBytes, ConfidentialValue } from './script.js';
+import { CompactSizeLen, RawOutput, RawTx, RawWitness, Script, VarBytes } from './script.js';
 import type { IssuanceData } from './script.js';
 import { amt2val, val2amt, NETWORK, concatBytes, isBytes, equalBytes } from './utils.js';
 import type { Bytes } from './utils.js';
 import * as u from './utils.js';
 import { getInputType, toVsize, normalizeInput, getPrevOut } from './utxo.js'; // circular
 
-const EMPTY32 = new Uint8Array(32);
+const EMPTY32: Uint8Array = new Uint8Array(32);
 const EMPTY_OUTPUT: P.UnwrapCoder<typeof RawOutput> = {
   asset: new Uint8Array(33),
   value: new Uint8Array(9),
@@ -949,7 +949,7 @@ export class Transaction {
     const inputs = this.inputs.map(inputBeforeSign);
     const outputs = this.outputs.map(outputBeforeSign);
     if (!isAny) {
-      inputHash = u.sha256x2(...inputs.map(TxHashIdx.encode));
+      inputHash = u.sha256x2(...inputs.map((i) => Uint8Array.from(TxHashIdx.encode(i))));
       issuanceHash = u.sha256x2(...inputs.map((inp) => {
         if (inp.issuance) {
           return concatBytes(
@@ -963,11 +963,11 @@ export class Transaction {
       }));
     }
     if (!isAny && !isSingle && !isNone)
-      sequenceHash = u.sha256x2(...inputs.map((i) => P.U32LE.encode(i.sequence)));
+      sequenceHash = u.sha256x2(...inputs.map((i) => Uint8Array.from(P.U32LE.encode(i.sequence))));
     if (!isSingle && !isNone) {
-      outputHash = u.sha256x2(...outputs.map(RawOutput.encode));
+      outputHash = u.sha256x2(...outputs.map((o) => Uint8Array.from(RawOutput.encode(o))));
     } else if (isSingle && idx < outputs.length)
-      outputHash = u.sha256x2(RawOutput.encode(outputs[idx]));
+      outputHash = u.sha256x2(Uint8Array.from(RawOutput.encode(outputs[idx])));
     const input = inputs[idx];
     const issuanceParts: Uint8Array[] = [];
     if (input.issuance) {

@@ -75,11 +75,11 @@ function toConfidentialSegwit(
   let res;
   let version: number;
   try {
-    res = bech32.decode(address);
+    res = bech32.decode(address as `${string}1${string}`);
     version = res.words[0];
     if (version !== 0) throw new Error('wrong version for bech32');
   } catch {
-    res = bech32m.decode(address);
+    res = bech32m.decode(address as `${string}1${string}`);
     version = res.words[0];
   }
   const program = Uint8Array.from(bech32.fromWords(res.words.slice(1)));

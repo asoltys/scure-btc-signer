@@ -728,11 +728,11 @@ export function Address(network = NETWORK) {
       if (network.bech32 && lower.startsWith(network.bech32)) {
         let res;
         try {
-          res = bech32.decode(address);
+          res = bech32.decode(address as `${string}1${string}`);
           if (res.words[0] !== 0) throw new Error(`bech32: wrong version=${res.words[0]}`);
         } catch (_) {
           // Starting from version 1 it is decoded as bech32m
-          res = bech32m.decode(address);
+          res = bech32m.decode(address as `${string}1${string}`);
           if (res.words[0] === 0) throw new Error(`bech32m: wrong version=${res.words[0]}`);
         }
         if (res.prefix !== network.bech32) throw new Error(`wrong bech32 prefix=${res.prefix}`);

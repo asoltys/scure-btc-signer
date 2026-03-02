@@ -154,7 +154,7 @@ const borromeanSign = (
   rsizes: number[], secidx: number[], nrings: number, m: Uint8Array
 ): number => {
   let rgej: PointT;
-  let tmp = new Uint8Array(33);
+  let tmp: Uint8Array = new Uint8Array(33);
   let count = 0;
 
   const sha256_e0 = sha256.create();
@@ -210,7 +210,7 @@ const borromeanVerify = (
   const sha256_e0 = sha256.create();
 
   for (let i = 0; i < nrings; i++) {
-    let tmp = borromeanHash(m, e0, i, 0);
+    let tmp: Uint8Array = borromeanHash(m, e0, i, 0);
     let ens = bytesToNumberBE(tmp) % N;
     for (let j = 0; j < rsizes[i]; j++) {
       if (s[count] === 0n || ens === 0n || pubs[count].is0()) return false;
@@ -320,27 +320,27 @@ class RNG {
   static create(seed: Uint8Array): RNG {
     const zero = new Uint8Array([0x00]);
     const one = new Uint8Array([0x01]);
-    let v = new Uint8Array(32).fill(0x01);
-    let k = new Uint8Array(32).fill(0x00);
-    k = hmac(sha256, k, concatBytes(v, zero, seed));
-    v = hmac(sha256, k, v);
-    k = hmac(sha256, k, concatBytes(v, one, seed));
-    v = hmac(sha256, k, v);
+    let v: Uint8Array = new Uint8Array(32).fill(0x01);
+    let k: Uint8Array = new Uint8Array(32).fill(0x00);
+    k = Uint8Array.from(hmac(sha256, k, concatBytes(v, zero, seed)));
+    v = Uint8Array.from(hmac(sha256, k, v));
+    k = Uint8Array.from(hmac(sha256, k, concatBytes(v, one, seed)));
+    v = Uint8Array.from(hmac(sha256, k, v));
     return new RNG(k, v, false);
   }
 
   generate(outlen: number): Uint8Array {
     const zero = new Uint8Array([0x00]);
-    let out = new Uint8Array(outlen);
+    let out: Uint8Array = new Uint8Array(outlen);
     if (this.retry) {
-      this.k = hmac(sha256, this.k, concatBytes(this.v, zero));
-      this.v = hmac(sha256, this.k, this.v);
+      this.k = Uint8Array.from(hmac(sha256, this.k, concatBytes(this.v, zero)));
+      this.v = Uint8Array.from(hmac(sha256, this.k, this.v));
     }
     let remaining = outlen;
     let offset = 0;
     while (remaining > 0) {
       const now = Math.min(remaining, 32);
-      this.v = hmac(sha256, this.k, this.v);
+      this.v = Uint8Array.from(hmac(sha256, this.k, this.v));
       out.set(this.v.slice(0, now), offset);
       remaining -= now;
       offset += now;
@@ -365,7 +365,7 @@ function rangeproofGenrand(
   proof: Uint8Array, len: number,
   gen: Uint8Array,
 ) {
-  let tmp = new Uint8Array(32);
+  let tmp: Uint8Array = new Uint8Array(32);
   let rngseed = new Uint8Array(32 + 33 + 33 + len);
   let acc = 0n;
   let ret = 1;
@@ -763,7 +763,7 @@ function surjBorromeanSign(
 
   // Phase 1: Forward from secIdx+1
   let R = Point.BASE.multiply(nonce);
-  let tmp = R.toBytes(true);
+  let tmp: Uint8Array = R.toBytes(true);
   for (let j = secIdx + 1; j < nKeys; j++) {
     const e = surjBorromeanHash(tmp, m, 0, j);
     const eBig = bytesToNumberBE(e);
@@ -777,7 +777,7 @@ function surjBorromeanSign(
   const e0 = sha256(concatBytes(tmp, m));
 
   // Phase 2: Forward from 0 to secIdx
-  let ePrev = e0;
+  let ePrev: Uint8Array = e0;
   for (let j = 0; j < secIdx; j++) {
     const e = surjBorromeanHash(ePrev, m, 0, j);
     const eBig = bytesToNumberBE(e);
@@ -799,7 +799,7 @@ function surjBorromeanVerify(
   m: Uint8Array, pubkeys: PointT[], e0: Uint8Array, s: bigint[]
 ): boolean {
   const nKeys = pubkeys.length;
-  let ePrev = e0;
+  let ePrev: Uint8Array = e0;
   for (let j = 0; j < nKeys; j++) {
     const e = surjBorromeanHash(ePrev, m, 0, j);
     const eBig = bytesToNumberBE(e);

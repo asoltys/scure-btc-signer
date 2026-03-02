@@ -1,6 +1,7 @@
 import { hex } from '@scure/base';
 import * as P from 'micro-packed';
 import { CompactSize, CompactSizeLen, RawOutput, RawTx, RawWitness, VarBytes } from './script.js';
+import type { IssuanceData } from './script.js';
 import { Transaction } from './transaction.js'; // circular
 import { compareBytes, PubT, validatePubkey, equalBytes } from './utils.js';
 import type { Bytes } from './utils.js';
@@ -330,7 +331,10 @@ export type RequireType<T, K extends keyof T> = T & {
   [P in K]-?: T[P];
 };
 
-export type TransactionInput = P.UnwrapCoder<typeof PSBTInputCoder>;
+export type TransactionInput = P.UnwrapCoder<typeof PSBTInputCoder> & {
+  issuance?: IssuanceData;
+  isPegin?: boolean;
+};
 export type TransactionInputUpdate = ExtendType<
   TransactionInput,
   {

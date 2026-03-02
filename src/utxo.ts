@@ -49,7 +49,7 @@ export function normalizeInput(
   if (!('nonWitnessUtxo' in i) && res.nonWitnessUtxo === undefined) delete res.nonWitnessUtxo;
   if (res.sequence === undefined) res.sequence = DEFAULT_SEQUENCE;
   if (res.tapMerkleRoot === null) delete res.tapMerkleRoot;
-  res = psbt.mergeKeyMap(psbt.PSBTInput, res, cur, allowedFields);
+  res = psbt.mergeKeyMap(psbt.PSBTInput, res, cur, allowedFields as any);
   psbt.PSBTInputCoder.encode(res); // Validates that everything is correct at this point
 
   let prevOut;
@@ -62,9 +62,10 @@ export function normalizeInput(
   res.pegInWitness = i.pegInWitness || [new Uint8Array([])]
   res.issuanceRangeProof = i.issuanceRangeProof || new Uint8Array([])
   res.inflationRangeProof = i.inflationRangeProof || new Uint8Array([])
-  if (i.issuance) res.issuance = i.issuance;
-  if (i.isPegin) res.isPegin = i.isPegin;
-  return res;
+  const result = res as psbt.TransactionInput;
+  if (i.issuance) result.issuance = i.issuance;
+  if (i.isPegin) result.isPegin = i.isPegin;
+  return result;
 }
 
 export function getInputType(input: psbt.TransactionInput, allowLegacyWitnessUtxo = false) {
