@@ -1,9 +1,14 @@
-import { bech32, bech32m, type Coder, createBase58check, hex } from '@scure/base';
+import { hex, bech32, bech32m, createBase58check } from '@scure/base';
+import type { Coder } from '@scure/base';
 import * as P from 'micro-packed';
-import { TaprootControlBlock, type TransactionInput } from './psbt.ts';
-import { OpToNum, Script, type ScriptType, VarBytes } from './script.ts';
-import * as u from './utils.ts';
-import { type BTC_NETWORK, type Bytes, NETWORK } from './utils.ts';
+import { TaprootControlBlock } from './psbt.js';
+import type { TransactionInput } from './psbt.js';
+import { OpToNum, Script, VarBytes } from './script.js';
+import type { ScriptType } from './script.js';
+import { NETWORK } from './utils.js';
+import type { Bytes } from './utils.js';
+import * as u from './utils.js';
+import { decodeAddress as blech32DecodeAddress } from './blech32.js';
 
 // We need following items:
 // - encode/decode output script
@@ -16,21 +21,6 @@ export type P2Ret = {
   address?: string;
   redeemScript?: Bytes;
   witnessScript?: Bytes;
-  hash?: Bytes;
-};
-
-// Pay to Anchor (P2A)
-type OutP2AType = { type: 'p2a'; script: Bytes };
-const OutP2A: Coder<OptScript, OutP2AType | undefined> = {
-  encode(from: ScriptType): OutP2AType | undefined {
-    if (from.length !== 2 || from[0] !== 1 || !u.isBytes(from[1]) || hex.encode(from[1]) !== '4e73')
-      return;
-    return { type: 'p2a', script: Script.encode(from) };
-  },
-  decode: (to: OutP2AType): OptScript => {
-    if (to.type !== 'p2a') return;
-    return [1, hex.decode('4e73')];
-  },
 };
 
 // Public Key (P2PK)
@@ -204,7 +194,6 @@ const OutUnknown: Coder<OptScript, OutUnknownType | undefined> = {
 // /Payments
 
 const OutScripts = [
-  OutP2A,
   OutPK,
   OutPKH,
   OutSH,
@@ -240,22 +229,7 @@ export type CustomScript = Coder<OptScript, CustomScriptOut | undefined> & {
 };
 
 // We can validate this once, because of packed & coders
-export const OutScript: P.CoderType<
-  NonNullable<
-    | OutP2AType
-    | OutPKType
-    | OutPKHType
-    | OutSHType
-    | OutWSHType
-    | OutWPKHType
-    | OutMSType
-    | OutTRType
-    | OutTRNSType
-    | OutTRMSType
-    | OutUnknownType
-    | undefined
-  >
-> = P.validate(_OutScript, (i) => {
+export const OutScript = P.validate(_OutScript, (i) => {
   if (i.type === 'pk' && !isValidPubkey(i.pubkey, u.PubT.ecdsa))
     throw new Error('OutScript/pk: wrong key');
   if (
@@ -298,7 +272,7 @@ function checkWSH(s: OutWSHType, witnessScript: Bytes) {
     throw new Error(`checkScript: P2${w.type} cannot be wrapped in P2WSH`);
 }
 
-export function checkScript(script?: Bytes, redeemScript?: Bytes, witnessScript?: Bytes): void {
+export function checkScript(script?: Bytes, redeemScript?: Bytes, witnessScript?: Bytes) {
   if (script) {
     const s = OutScript.decode(script);
     // ms||pk maybe work, but there will be no address, hard to spend
@@ -329,79 +303,42 @@ function uniqPubkey(pubkeys: Bytes[]) {
     map[key] = true;
   }
 }
-// We want narrow types inside p2* methods, but always want to type-check if they compatible with P2Ret here!
-// Also we use satisfies for additional check (ts 4.9+)
-type Extends<T, U> = T extends U ? T : never;
 
-export type P2PK = { type: 'pk'; script: Bytes };
-export const p2pk = (pubkey: Bytes, _network: BTC_NETWORK = NETWORK): Extends<P2PK, P2Ret> => {
+// @ts-ignore
+export const p2pk = (pubkey: Bytes, network = NETWORK): P2Ret => {
   // network is unused
   if (!isValidPubkey(pubkey, u.PubT.ecdsa)) throw new Error('P2PK: invalid publicKey');
-  return { type: 'pk', script: OutScript.encode({ type: 'pk', pubkey }) } as const satisfies P2Ret;
+  return {
+    type: 'pk',
+    script: OutScript.encode({ type: 'pk', pubkey }),
+  };
 };
-
-export type P2PKH = { type: 'pkh'; script: Bytes; address: string; hash: Bytes };
-export const p2pkh = (publicKey: Bytes, network: BTC_NETWORK = NETWORK): Extends<P2PKH, P2Ret> => {
+export const p2pkh = (publicKey: Bytes, network = NETWORK): P2Ret => {
   if (!isValidPubkey(publicKey, u.PubT.ecdsa)) throw new Error('P2PKH: invalid publicKey');
   const hash = u.hash160(publicKey);
   return {
     type: 'pkh',
     script: OutScript.encode({ type: 'pkh', hash }),
     address: Address(network).encode({ type: 'pkh', hash }),
-    hash,
-  } as const satisfies P2Ret;
+  };
 };
-
-export type P2SHBase = {
-  type: 'sh';
-  redeemScript: Bytes;
-  script: Bytes;
-  address: string;
-  hash: Bytes;
-};
-export type P2SHWithWitness = P2SHBase & { witnessScript: Bytes };
-export type P2SHWithoutWitness = Omit<P2SHBase, 'witnessScript'>;
-export type P2SHReturn<T extends P2Ret> = T extends { witnessScript: Bytes }
-  ? P2SHWithWitness
-  : P2SHWithoutWitness;
-export const p2sh = <T extends P2Ret>(
-  child: T,
-  network: BTC_NETWORK = NETWORK
-): Extends<P2SHReturn<T>, P2Ret> => {
+export const p2sh = (child: P2Ret, network = NETWORK): P2Ret => {
   // It is already tested inside noble-hashes and checkScript
   const cs = child.script;
   if (!u.isBytes(cs)) throw new Error(`Wrong script: ${typeof child.script}, expected Uint8Array`);
   const hash = u.hash160(cs);
   const script = OutScript.encode({ type: 'sh', hash });
   checkScript(script, cs, child.witnessScript);
-  if (child.witnessScript) {
-    return {
-      type: 'sh',
-      redeemScript: cs,
-      script: OutScript.encode({ type: 'sh', hash }),
-      address: Address(network).encode({ type: 'sh', hash }),
-      hash,
-      witnessScript: child.witnessScript,
-    } as Extends<P2SHReturn<T>, P2Ret> satisfies P2Ret;
-  } else {
-    return {
-      type: 'sh',
-      redeemScript: cs,
-      script: OutScript.encode({ type: 'sh', hash }),
-      address: Address(network).encode({ type: 'sh', hash }),
-      hash,
-    } as Extends<P2SHReturn<T>, P2Ret> satisfies P2Ret;
-  }
+  const res: P2Ret = {
+    type: 'sh',
+    redeemScript: cs,
+    script: OutScript.encode({ type: 'sh', hash }),
+    address: Address(network).encode({ type: 'sh', hash }),
+  };
+  if (child.witnessScript) res.witnessScript = child.witnessScript;
+  return res;
 };
-
-export type P2WSH = {
-  type: 'wsh';
-  witnessScript: Bytes;
-  script: Bytes;
-  address: string;
-  hash: Bytes;
-};
-export const p2wsh = (child: P2Ret, network: BTC_NETWORK = NETWORK): Extends<P2WSH, P2Ret> => {
+export const p2wsh = (child: P2Ret, network = NETWORK): P2Ret => {
   const cs = child.script;
   if (!u.isBytes(cs)) throw new Error(`Wrong script: ${typeof cs}, expected Uint8Array`);
   const hash = u.sha256(cs);
@@ -412,15 +349,9 @@ export const p2wsh = (child: P2Ret, network: BTC_NETWORK = NETWORK): Extends<P2W
     witnessScript: cs,
     script: OutScript.encode({ type: 'wsh', hash }),
     address: Address(network).encode({ type: 'wsh', hash }),
-    hash,
-  } as const satisfies P2Ret;
+  };
 };
-
-export type P2WPKH = { type: 'wpkh'; script: Bytes; address: string; hash: Bytes };
-export const p2wpkh = (
-  publicKey: Bytes,
-  network: BTC_NETWORK = NETWORK
-): Extends<P2WPKH, P2Ret> => {
+export const p2wpkh = (publicKey: Bytes, network = NETWORK): P2Ret => {
   if (!isValidPubkey(publicKey, u.PubT.ecdsa)) throw new Error('P2WPKH: invalid publicKey');
   if (publicKey.length === 65) throw new Error('P2WPKH: uncompressed public key');
   const hash = u.hash160(publicKey);
@@ -428,24 +359,14 @@ export const p2wpkh = (
     type: 'wpkh',
     script: OutScript.encode({ type: 'wpkh', hash }),
     address: Address(network).encode({ type: 'wpkh', hash }),
-    hash,
-  } as const satisfies P2Ret;
+  };
 };
-
-export type P2MS = { type: 'ms'; script: Bytes };
-export const p2ms = (
-  m: number,
-  pubkeys: Bytes[],
-  allowSamePubkeys = false
-): Extends<P2MS, P2Ret> => {
+export const p2ms = (m: number, pubkeys: Bytes[], allowSamePubkeys = false): P2Ret => {
   if (!allowSamePubkeys) uniqPubkey(pubkeys);
-  return {
-    type: 'ms',
-    script: OutScript.encode({ type: 'ms', pubkeys, m }),
-  } as const satisfies P2Ret;
+  return { type: 'ms', script: OutScript.encode({ type: 'ms', pubkeys, m }) };
 };
 
-export type HashedTree =
+type HashedTree =
   | { type: 'leaf'; version?: number; script: Bytes; hash: Bytes }
   | { type: 'branch'; left: HashedTree; right: HashedTree; hash: Bytes };
 function checkTaprootScript(
@@ -492,24 +413,19 @@ function checkTaprootScript(
   }
 }
 
-export type P2TR = {
-  type: 'tr';
-  script: Bytes;
-  address: string;
-  tweakedPubkey: Bytes;
-  tapInternalKey: Bytes;
-};
-export type P2TR_TREE = P2TR & {
-  tapMerkleRoot: Bytes;
-  tapLeafScript: TransactionInput['tapLeafScript'];
-  leaves: TaprootLeaf[];
+export type P2TROut = P2Ret & {
+  tweakedPubkey: Uint8Array;
+  tapInternalKey: Uint8Array;
+  tapMerkleRoot?: Uint8Array;
+  tapLeafScript?: TransactionInput['tapLeafScript'];
+  leaves?: TaprootLeaf[];
 };
 
 export type TaprootNode = {
   script: Bytes | string;
   leafVersion?: number;
   weight?: number;
-} & Partial<P2TR_TREE>;
+} & Partial<P2TROut>;
 export type TaprootScriptTree = TaprootNode | TaprootScriptTree[];
 export type TaprootScriptList = TaprootNode[];
 type _TaprootTreeInternal = {
@@ -540,7 +456,7 @@ export function taprootListToTree(taprootList: TaprootScriptList): TaprootScript
   return (last?.childs || last) as TaprootScriptTree;
 }
 
-export type TaprootLeaf = {
+type TaprootLeaf = {
   type: 'leaf';
   version?: number;
   script: Bytes;
@@ -548,7 +464,7 @@ export type TaprootLeaf = {
   path: Bytes[];
 };
 
-export type HashedTreeWithPath =
+type HashedTreeWithPath =
   | TaprootLeaf
   | {
       type: 'branch';
@@ -615,34 +531,19 @@ function taprootHashTree(
 }
 
 export const TAP_LEAF_VERSION = 0xc0;
-export const tapLeafHash = (script: Bytes, version: number = TAP_LEAF_VERSION): Bytes =>
+export const tapLeafHash = (script: Bytes, version = TAP_LEAF_VERSION) =>
   u.tagSchnorr('TapLeaf', new Uint8Array([version]), VarBytes.encode(script));
 
 // Works as key OR tree.
 // If we only have tree, need to add unspendable key, otherwise
 // complex multisig wallet can be spent by owner of key only. See TAPROOT_UNSPENDABLE_KEY
-export type P2TRRet<T> = T extends TaprootScriptTree ? P2TR_TREE : P2TR;
-export function p2tr(
-  internalPubKey: Bytes | string,
-  tree?: undefined,
-  network?: BTC_NETWORK,
-  allowUnknownOutputs?: boolean,
-  customScripts?: CustomScript[]
-): Extends<P2TR, P2Ret>;
-export function p2tr(
-  internalPubKey: Bytes | string,
-  tree: TaprootScriptTree,
-  network?: BTC_NETWORK,
-  allowUnknownOutputs?: boolean,
-  customScripts?: CustomScript[]
-): Extends<P2TR_TREE, P2Ret>;
 export function p2tr(
   internalPubKey?: Bytes | string,
   tree?: TaprootScriptTree,
-  network: BTC_NETWORK = NETWORK,
+  network = NETWORK,
   allowUnknownOutputs = false,
   customScripts?: CustomScript[]
-): Extends<P2TR & Partial<P2TR_TREE>, P2Ret> {
+): P2TROut {
   // Unspendable
   if (!internalPubKey && !tree) throw new Error('p2tr: should have pubKey or scriptTree (or both)');
   const pubKey =
@@ -650,13 +551,14 @@ export function p2tr(
       ? hex.decode(internalPubKey)
       : internalPubKey || u.TAPROOT_UNSPENDABLE_KEY;
   if (!isValidPubkey(pubKey, u.PubT.schnorr)) throw new Error('p2tr: non-schnorr pubkey');
-  if (tree) {
-    let hashedTree = taprootAddPath(
-      taprootHashTree(tree, pubKey, allowUnknownOutputs, customScripts)
-    );
-    const tapMerkleRoot = hashedTree.hash;
-    const [tweakedPubkey, parity] = u.taprootTweakPubkey(pubKey, tapMerkleRoot);
-    const leaves = taprootWalkTree(hashedTree).map((l) => ({
+  let hashedTree = tree
+    ? taprootAddPath(taprootHashTree(tree, pubKey, allowUnknownOutputs, customScripts))
+    : undefined;
+  const tapMerkleRoot = hashedTree ? hashedTree.hash : undefined;
+  const [tweakedPubkey, parity] = u.taprootTweakPubkey(pubKey, tapMerkleRoot || P.EMPTY);
+  let leaves;
+  if (hashedTree) {
+    leaves = taprootWalkTree(hashedTree).map((l) => ({
       ...l,
       controlBlock: TaprootControlBlock.encode({
         version: (l.version || TAP_LEAF_VERSION) + parity,
@@ -664,33 +566,28 @@ export function p2tr(
         merklePath: l.path,
       }),
     }));
-    return {
-      type: 'tr',
-      script: OutScript.encode({ type: 'tr', pubkey: tweakedPubkey }),
-      address: Address(network).encode({ type: 'tr', pubkey: tweakedPubkey }),
-      // For tests
-      tweakedPubkey,
-      // PSBT stuff
-      tapInternalKey: pubKey,
-      leaves,
-      tapLeafScript: leaves.map((l) => [
-        TaprootControlBlock.decode(l.controlBlock),
-        u.concatBytes(l.script, new Uint8Array([l.version || TAP_LEAF_VERSION])),
-      ]),
-      tapMerkleRoot,
-    } as const satisfies P2TR_TREE;
-  } else {
-    const tweakedPubkey = u.taprootTweakPubkey(pubKey, P.EMPTY)[0];
-    return {
-      type: 'tr',
-      script: OutScript.encode({ type: 'tr', pubkey: tweakedPubkey }),
-      address: Address(network).encode({ type: 'tr', pubkey: tweakedPubkey }),
-      // For tests
-      tweakedPubkey,
-      // PSBT stuff
-      tapInternalKey: pubKey,
-    } as const satisfies P2TR;
   }
+  let tapLeafScript: TransactionInput['tapLeafScript'];
+  if (leaves) {
+    tapLeafScript = leaves.map((l) => [
+      TaprootControlBlock.decode(l.controlBlock),
+      u.concatBytes(l.script, new Uint8Array([l.version || TAP_LEAF_VERSION])),
+    ]);
+  }
+  const res: P2TROut = {
+    type: 'tr',
+    script: OutScript.encode({ type: 'tr', pubkey: tweakedPubkey }),
+    address: Address(network).encode({ type: 'tr', pubkey: tweakedPubkey }),
+    // For tests
+    tweakedPubkey,
+    // PSBT stuff
+    tapInternalKey: pubKey,
+  };
+  // Just in case someone would want to select a specific script
+  if (leaves) res.leaves = leaves;
+  if (tapLeafScript) res.tapLeafScript = tapLeafScript;
+  if (tapMerkleRoot) res.tapMerkleRoot = tapMerkleRoot;
+  return res;
 }
 
 // Returns all combinations of size M from lst
@@ -729,45 +626,26 @@ export function combinations<T>(m: number, list: T[]): T[][] {
  * Takes O(n^2) if m != n. 99-of-100 is ok, 5-of-100 is not.
  * `2-of-[A,B,C] => [A,B] | [A,C] | [B,C]`
  */
-export type P2TR_NS = { type: 'tr_ns'; script: Bytes };
-export const p2tr_ns = (
-  m: number,
-  pubkeys: Bytes[],
-  allowSamePubkeys = false
-): Extends<P2TR_NS, P2Ret>[] => {
+export const p2tr_ns = (m: number, pubkeys: Bytes[], allowSamePubkeys = false): P2Ret[] => {
   if (!allowSamePubkeys) uniqPubkey(pubkeys);
-  return combinations(m, pubkeys).map(
-    (i) =>
-      ({
-        type: 'tr_ns',
-        script: OutScript.encode({ type: 'tr_ns', pubkeys: i }),
-      }) as const
-  ) satisfies P2Ret[];
+  return combinations(m, pubkeys).map((i) => ({
+    type: 'tr_ns',
+    script: OutScript.encode({ type: 'tr_ns', pubkeys: i }),
+  }));
 };
 // Taproot public key (case of p2tr_ns)
-export type P2TR_PK = P2TR_NS;
-export const p2tr_pk = (pubkey: Bytes): Extends<P2TR_PK, P2Ret> =>
-  p2tr_ns(1, [pubkey], undefined)[0] satisfies P2Ret;
+export const p2tr_pk = (pubkey: Bytes): P2Ret => p2tr_ns(1, [pubkey], undefined)[0];
 
-export type P2TR_MS = { type: 'tr_ms'; script: Bytes };
-export function p2tr_ms(
-  m: number,
-  pubkeys: Bytes[],
-  allowSamePubkeys = false
-): Extends<P2TR_MS, P2Ret> {
+export function p2tr_ms(m: number, pubkeys: Bytes[], allowSamePubkeys = false) {
   if (!allowSamePubkeys) uniqPubkey(pubkeys);
   return {
     type: 'tr_ms',
     script: OutScript.encode({ type: 'tr_ms', pubkeys, m }),
-  } as const satisfies P2Ret;
+  };
 }
 
 // Simple pubkey address, without complex scripts
-export function getAddress(
-  type: 'pkh' | 'wpkh' | 'tr',
-  privKey: Bytes,
-  network: BTC_NETWORK = NETWORK
-): string {
+export function getAddress(type: 'pkh' | 'wpkh' | 'tr', privKey: Bytes, network = NETWORK) {
   if (type === 'tr') {
     return p2tr(u.pubSchnorr(privKey), undefined, network).address;
   }
@@ -777,25 +655,20 @@ export function getAddress(
   throw new Error(`getAddress: unknown type=${type}`);
 }
 
-export const _sortPubkeys = (pubkeys: Bytes[]): Bytes[] => Array.from(pubkeys).sort(u.compareBytes);
+export const _sortPubkeys = (pubkeys: Bytes[]) => Array.from(pubkeys).sort(u.compareBytes);
 
 export function multisig(
   m: number,
   pubkeys: Bytes[],
   sorted = false,
   witness = false,
-  network: BTC_NETWORK = NETWORK
-): P2Ret {
+  network = NETWORK
+) {
   const ms = p2ms(m, sorted ? _sortPubkeys(pubkeys) : pubkeys);
   return witness ? p2wsh(ms, network) : p2sh(ms, network);
 }
 
-export function sortedMultisig(
-  m: number,
-  pubkeys: Bytes[],
-  witness = false,
-  network: BTC_NETWORK = NETWORK
-): P2Ret {
+export function sortedMultisig(m: number, pubkeys: Bytes[], witness = false, network = NETWORK) {
   return multisig(m, pubkeys, true, witness, network);
 }
 
@@ -818,7 +691,7 @@ function formatKey(hashed: Bytes, prefix: number[]): string {
   return base58check.encode(u.concatBytes(Uint8Array.from(prefix), hashed));
 }
 
-export function WIF(network: BTC_NETWORK = NETWORK): Coder<Bytes, string> {
+export function WIF(network = NETWORK): Coder<Bytes, string> {
   return {
     encode(privKey: Bytes) {
       const compressed = u.concatBytes(privKey, new Uint8Array([0x01]));
@@ -837,7 +710,7 @@ export function WIF(network: BTC_NETWORK = NETWORK): Coder<Bytes, string> {
 }
 
 // Returns OutType, which can be used to create outscript
-export function Address(network: BTC_NETWORK = NETWORK) {
+export function Address(network = NETWORK) {
   return {
     encode(from: P.UnwrapCoder<OutScriptType>): string {
       const { type } = from;
@@ -849,16 +722,17 @@ export function Address(network: BTC_NETWORK = NETWORK) {
       throw new Error(`Unknown address type=${type}`);
     },
     decode(address: string): P.UnwrapCoder<OutScriptType> {
-      if (address.length < 14 || address.length > 74) throw new Error('Invalid address length');
-      // Bech32
-      if (network.bech32 && address.toLowerCase().startsWith(`${network.bech32}1`)) {
+      if (address.length < 14 || address.length > 200) throw new Error('Invalid address length');
+      const lower = address.toLowerCase();
+      // Bech32 (unconfidential segwit)
+      if (network.bech32 && lower.startsWith(network.bech32)) {
         let res;
         try {
-          res = bech32.decode(address as `${string}1${string}`);
+          res = bech32.decode(address);
           if (res.words[0] !== 0) throw new Error(`bech32: wrong version=${res.words[0]}`);
         } catch (_) {
           // Starting from version 1 it is decoded as bech32m
-          res = bech32m.decode(address as `${string}1${string}`);
+          res = bech32m.decode(address);
           if (res.words[0] === 0) throw new Error(`bech32m: wrong version=${res.words[0]}`);
         }
         if (res.prefix !== network.bech32) throw new Error(`wrong bech32 prefix=${res.prefix}`);
@@ -870,7 +744,23 @@ export function Address(network: BTC_NETWORK = NETWORK) {
         else if (version === 1 && data.length === 32) return { type: 'tr', pubkey: data };
         else throw new Error('Unknown witness program');
       }
+      // Blech32 (confidential segwit) — extract script, ignore blinding key
+      if (network.blech32 && lower.startsWith(network.blech32)) {
+        const { witness, witnessVersion } = blech32DecodeAddress(address);
+        if (witnessVersion === 0 && witness.length === 32) return { type: 'wsh', hash: witness };
+        else if (witnessVersion === 0 && witness.length === 20) return { type: 'wpkh', hash: witness };
+        else if (witnessVersion === 1 && witness.length === 32) return { type: 'tr', pubkey: witness };
+        else throw new Error('Unknown blech32 witness program');
+      }
       const data = base58check.decode(address);
+      // Confidential base58: [confidentialPrefix, addrPrefix, blindingKey(33), hash(20)]
+      if (data[0] === network.confidentialPrefix && data.length === 55) {
+        const addrPrefix = data[1];
+        const hash = data.slice(35);
+        if (addrPrefix === network.pubKeyHash) return { type: 'pkh', hash };
+        else if (addrPrefix === network.scriptHash) return { type: 'sh', hash };
+        throw new Error(`Invalid confidential address prefix=${addrPrefix}`);
+      }
       if (data.length !== 21) throw new Error('Invalid base58 address');
       // Pay To Public Key Hash
       if (data[0] === network.pubKeyHash) {

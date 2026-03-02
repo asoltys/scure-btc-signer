@@ -1,40 +1,133 @@
 import { hex } from '@scure/base';
 import * as P from 'micro-packed';
-import { Address, type CustomScript, OutScript, checkScript, tapLeafHash } from './payment.ts';
-import * as psbt from './psbt.ts';
-import { CompactSizeLen, RawWitness, Script, VarBytes } from './script.ts';
+import { Address, OutScript, checkScript, tapLeafHash } from './payment.js';
+import type { CustomScript } from './payment.js';
+import * as psbt from './psbt.js';
+import { CompactSizeLen, RawOutput, RawTx, RawWitness, Script, VarBytes } from './script.js';
+import { DEFAULT_SEQUENCE, inputBeforeSign, SignatureHash, Transaction } from './transaction.js'; // circular
+import type { TxOpts } from './transaction.js';
 import {
-  SignatureHash,
-  Transaction,
-  type TxOpts,
-  getInputType,
-  getPrevOut,
-  inputBeforeSign,
-  normalizeInput,
-  toVsize,
-} from './transaction.ts';
-import {
-  type Bytes,
+  val2amt,
   NETWORK,
-  PubT,
-  TAPROOT_UNSPENDABLE_KEY,
   compareBytes,
   equalBytes,
   isBytes,
+  TAPROOT_UNSPENDABLE_KEY,
   sha256,
-  validatePubkey,
-} from './utils.ts';
+} from './utils.js';
+import type { Bytes } from './utils.js';
+import { validatePubkey, PubT } from './utils.js';
 
-// UTXO Select
-export type Output = { address: string; amount: bigint } | { script: Uint8Array; amount: bigint };
-export type Accumulated =
-  | {
-      indices: number[];
-      fee: bigint | undefined;
-      weight: number;
-      total: bigint;
+// Normalizes input
+export function getPrevOut(input: psbt.TransactionInput): P.UnwrapCoder<typeof RawOutput> {
+  if (input.nonWitnessUtxo) {
+    if (input.index === undefined) throw new Error('Unknown input index');
+    return input.nonWitnessUtxo.outputs[input.index];
+  } else if (input.witnessUtxo) return input.witnessUtxo;
+  else throw new Error('Cannot find previous output info');
+}
+
+export function normalizeInput(
+  i: psbt.TransactionInputUpdate,
+  cur?: psbt.TransactionInput,
+  allowedFields?: (keyof psbt.TransactionInput)[],
+  disableScriptCheck = false
+): psbt.TransactionInput {
+  let { nonWitnessUtxo, txid } = i;
+  // String support for common fields. We usually prefer Uint8Array to avoid errors
+  // like hex looking string accidentally passed, however, in case of nonWitnessUtxo
+  // it is better to expect string, since constructing this complex object will be
+  // difficult for user
+  if (typeof nonWitnessUtxo === 'string') nonWitnessUtxo = hex.decode(nonWitnessUtxo);
+  if (isBytes(nonWitnessUtxo)) nonWitnessUtxo = RawTx.decode(nonWitnessUtxo);
+  if (!('nonWitnessUtxo' in i) && nonWitnessUtxo === undefined)
+    nonWitnessUtxo = cur?.nonWitnessUtxo;
+  if (typeof txid === 'string') txid = hex.decode(txid);
+  // TODO: if we have nonWitnessUtxo, we can extract txId from here
+  if (txid === undefined) txid = cur?.txid;
+  let res: psbt.PSBTKeyMapKeys<typeof psbt.PSBTInput> = { ...cur, ...i, nonWitnessUtxo, txid };
+  if (!('nonWitnessUtxo' in i) && res.nonWitnessUtxo === undefined) delete res.nonWitnessUtxo;
+  if (res.sequence === undefined) res.sequence = DEFAULT_SEQUENCE;
+  if (res.tapMerkleRoot === null) delete res.tapMerkleRoot;
+  res = psbt.mergeKeyMap(psbt.PSBTInput, res, cur, allowedFields);
+  psbt.PSBTInputCoder.encode(res); // Validates that everything is correct at this point
+
+  let prevOut;
+  if (res.nonWitnessUtxo && res.index !== undefined)
+    prevOut = res.nonWitnessUtxo.outputs[res.index];
+  else if (res.witnessUtxo) prevOut = res.witnessUtxo;
+  if (prevOut && !disableScriptCheck)
+    checkScript(prevOut && prevOut.script, res.redeemScript, res.witnessScript);
+  res.witness = i.witness || [new Uint8Array([])]
+  res.pegInWitness = i.pegInWitness || [new Uint8Array([])]
+  res.issuanceRangeProof = i.issuanceRangeProof || new Uint8Array([])
+  res.inflationRangeProof = i.inflationRangeProof || new Uint8Array([])
+  if (i.issuance) res.issuance = i.issuance;
+  if (i.isPegin) res.isPegin = i.isPegin;
+  return res;
+}
+
+export function getInputType(input: psbt.TransactionInput, allowLegacyWitnessUtxo = false) {
+  let txType = 'legacy';
+  let defaultSighash = SignatureHash.ALL;
+  const prevOut = getPrevOut(input);
+  const first = OutScript.decode(prevOut.script);
+  let type = first.type;
+  let cur = first;
+  const stack = [first];
+  if (first.type === 'tr') {
+    defaultSighash = SignatureHash.DEFAULT;
+    return {
+      txType: 'taproot',
+      type: 'tr',
+      last: first,
+      lastScript: prevOut.script,
+      defaultSighash,
+      sighash: input.sighashType || defaultSighash,
+    };
+  } else {
+    if (first.type === 'wpkh' || first.type === 'wsh') txType = 'segwit';
+    if (first.type === 'sh') {
+      if (!input.redeemScript) throw new Error('inputType: sh without redeemScript');
+      let child = OutScript.decode(input.redeemScript);
+      if (child.type === 'wpkh' || child.type === 'wsh') txType = 'segwit';
+      stack.push(child);
+      cur = child;
+      type += `-${child.type}`;
     }
-  | undefined;
+    // wsh can be inside sh
+    if (cur.type === 'wsh') {
+      if (!input.witnessScript) throw new Error('inputType: wsh without witnessScript');
+      let child = OutScript.decode(input.witnessScript);
+      if (child.type === 'wsh') txType = 'segwit';
+      stack.push(child);
+      cur = child;
+      type += `-${child.type}`;
+    }
+    const last = stack[stack.length - 1];
+    if (last.type === 'sh' || last.type === 'wsh')
+      throw new Error('inputType: sh/wsh cannot be terminal type');
+    const lastScript = OutScript.encode(last);
+    const res = {
+      type,
+      txType,
+      last,
+      lastScript,
+      defaultSighash,
+      sighash: input.sighashType || defaultSighash,
+    };
+    if (txType === 'legacy' && !allowLegacyWitnessUtxo && !input.nonWitnessUtxo) {
+      throw new Error(
+        `Transaction/sign: legacy input without nonWitnessUtxo, can result in attack that forces paying higher fees. Pass allowLegacyWitnessUtxo=true, if you sure`
+      );
+    }
+    return res;
+  }
+}
+
+export const toVsize = (weight: number) => Math.ceil(weight / 4);
+// UTXO Select
+type Output = { address: string; amount: bigint } | { script: Uint8Array; amount: bigint };
 type TapLeafScript = psbt.TransactionInput['tapLeafScript'];
 type TB = Parameters<typeof psbt.TaprootControlBlock.encode>[0];
 const encodeTapBlock = (item: TB) => psbt.TaprootControlBlock.encode(item);
@@ -162,7 +255,7 @@ function estimateInput(
 }
 
 // Exported for tests, internal method
-export const _cmpBig = (a: bigint, b: bigint): 0 | 1 | -1 => {
+export const _cmpBig = (a: bigint, b: bigint) => {
   const n = a - b;
   if (n < 0n) return -1;
   else if (n > 0n) return 1;
@@ -178,7 +271,6 @@ export type EstimatorOpts = TxOpts & {
   bip69?: boolean; // https://github.com/bitcoin/bips/blob/master/bip-0069.mediawiki
   network?: typeof NETWORK;
   dust?: number; // how much vbytes considered dust?
-  dustRelayFeeRate?: bigint; // fee per dust byte (DUST_RELAY_TX_FEE)
   createTx?: boolean; // Create tx inside selection
   requiredInputs?: psbt.TransactionInputUpdate[]; // these inputs always will be used
   allowSameUtxo?: boolean; // allow using UTXO multiple times (for test purposes)
@@ -186,7 +278,7 @@ export type EstimatorOpts = TxOpts & {
 
 function getScript(o: Output, opts: TxOpts = {}, network = NETWORK) {
   let script;
-  if ('script' in o && isBytes(o.script)) {
+  if ('script' in o && o.script instanceof Uint8Array) {
     script = o.script;
   }
   if ('address' in o) {
@@ -195,12 +287,7 @@ function getScript(o: Output, opts: TxOpts = {}, network = NETWORK) {
     script = OutScript.encode(Address(network).decode(o.address));
   }
   if (!script) throw new Error('Estimator: wrong output script');
-  if (typeof o.amount !== 'bigint')
-    throw new Error(
-      `Estimator: wrong output amount=${
-        o.amount
-      }, should be of type bigint but got ${typeof o.amount}.`
-    );
+  if (typeof o.amount !== 'bigint') throw new Error(`Estimator: wrong output amount=${o.amount}`);
   if (script && !opts.allowUnknownOutputs && OutScript.decode(script).type === 'unknown') {
     throw new Error(
       'Estimator: unknown output script type, there is a chance that input is unspendable. Pass allowUnknownOutputs=true, if you sure'
@@ -236,49 +323,24 @@ export class _Estimator {
     value: bigint;
     estimate: { weight: number; hasWitnesses: boolean };
   }[];
+  // https://github.com/bitcoin/bitcoin/blob/f90603ac6d24f5263649675d51233f1fce8b2ecd/src/policy/policy.cpp#L44
+  // 32 + 4 + 1 + 107 + 4
   // Dust used in accumExact + change address algo
   // - change address: can be smaller for segwit
   // - accumExact: ???
-  private dust: bigint; // total dust limit (3||opts.dustRelayFeeRate * 182||opts.dust). Default: 546
-  private outputs: Output[];
-  private opts: EstimatorOpts;
-  constructor(inputs: psbt.TransactionInputUpdate[], outputs: Output[], opts: EstimatorOpts) {
-    this.outputs = outputs;
-    this.opts = opts;
+  private dust = 148n; // compat with coinselect
+
+  constructor(
+    inputs: psbt.TransactionInputUpdate[],
+    private outputs: Output[],
+    private opts: EstimatorOpts
+  ) {
     if (typeof opts.feePerByte !== 'bigint')
-      throw new Error(
-        `Estimator: wrong feePerByte=${
-          opts.feePerByte
-        }, should be of type bigint but got ${typeof opts.feePerByte}.`
-      );
-    // Dust stuff
-    // TODO: think about this more:
-    // - current dust filters tx which cannot be relayed by core
-    // - but actual dust meaning is 'can be this amount spent?'
-    // - dust contains full tx size. but we can use other inputs to pay for outputDust (and parially inputsDust)?
-    // - not sure if we can spent anything with feePerByte: 3. It will be relayed, but will it be mined?
-    // - for now it works exactly as bitcoin-core. But will create change/outputs which cannot be spent (reasonable).
-    // Number of bytes needed to create and spend a UTXO.
-    // https://github.com/bitcoin/bitcoin/blob/27a770b34b8f1dbb84760f442edb3e23a0c2420b/src/policy/policy.cpp#L28-L41
-    const inputsDust = 32 + 4 + 1 + 107 + 4; // NOTE: can be smaller for segwit tx?
-    const outputDust = 34; // NOTE: 'nSize = GetSerializeSize(txout)'
-    const dustBytes = opts.dust === undefined ? BigInt(inputsDust + outputDust) : opts.dust;
-    if (typeof dustBytes !== 'bigint') {
-      throw new Error(
-        `Estimator: wrong dust=${opts.dust}, should be of type bigint but got ${typeof opts.dust}.`
-      );
+      throw new Error(`Estimator: wrong feePerByte=${opts.feePerByte}`);
+    if (opts.dust) {
+      if (typeof opts.dust !== 'bigint') throw new Error(`Estimator: wrong dust=${opts.dust}`);
+      this.dust = opts.dust;
     }
-    // 3 sat/vb is the default minimum fee rate used to calculate dust thresholds by bitcoin core.
-    // 3000 sat/kvb -> 3 sat/vb.
-    // https://github.com/bitcoin/bitcoin/blob/27a770b34b8f1dbb84760f442edb3e23a0c2420b/src/policy/policy.h#L55
-    const dustFee = opts.dustRelayFeeRate === undefined ? 3n : opts.dustRelayFeeRate;
-    if (typeof dustFee !== 'bigint') {
-      throw new Error(
-        `Estimator: wrong dustRelayFeeRate=${opts.dustRelayFeeRate}, should be of type bigint but got ${typeof opts.dustRelayFeeRate}.`
-      );
-    }
-    // Dust uses feePerbyte by default, but we allow separate dust fee if needed
-    this.dust = dustBytes * dustFee;
     if (opts.requiredInputs !== undefined && !Array.isArray(opts.requiredInputs))
       throw new Error(`Estimator: wrong required inputs=${opts.requiredInputs}`);
     const network = opts.network || NETWORK;
@@ -309,13 +371,7 @@ export class _Estimator {
     }
     const inputKeys = new Set();
     this.normalizedInputs = allInputs.map((i) => {
-      const normalized = normalizeInput(
-        i,
-        undefined,
-        undefined,
-        opts.disableScriptCheck,
-        opts.allowUnknown
-      );
+      const normalized = normalizeInput(i, undefined, undefined, opts.disableScriptCheck);
       inputBeforeSign(normalized); // check fields
       const key = `${hex.encode(normalized.txid!)}:${normalized.index}`;
       if (!opts.allowSameUtxo && inputKeys.has(key))
@@ -324,8 +380,8 @@ export class _Estimator {
       const inputType = getInputType(normalized, opts.allowLegacyWitnessUtxo);
       const prev = getPrevOut(normalized);
       const estimate = estimateInput(inputType, normalized, this.opts);
-      const value = prev.amount - opts.feePerByte * BigInt(toVsize(estimate.weight)); // value = amount-fee
-      return { inputType, normalized, amount: prev.amount, value, estimate };
+      const value = val2amt(prev.value) - opts.feePerByte * BigInt(toVsize(estimate.weight)); // value = amount-fee
+      return { inputType, normalized, amount: val2amt(prev.value), value, estimate };
     });
   }
   private checkInputIdx(idx: number) {
@@ -353,32 +409,33 @@ export class _Estimator {
       return compareBytes(scripts[a], scripts[b]);
     });
   }
-  private getSatoshi(weight: number) {
-    return this.opts.feePerByte * BigInt(toVsize(weight));
+  private getSatoshi(weigth: number) {
+    return this.opts.feePerByte * BigInt(toVsize(weigth));
   }
 
   // Sort by value instead of amount
-  get biggest(): number[] {
+  get biggest() {
     return this.normalizedInputs
       .map((_i, j) => j)
       .sort((a, b) => _cmpBig(this.normalizedInputs[b].value, this.normalizedInputs[a].value));
   }
-  get smallest(): number[] {
+  get smallest() {
     return this.biggest.reverse();
   }
   // These assume that UTXO array has historical order.
   // Otherwise, we have no way to know which tx is oldest
   // Explorers usually give UTXO in this order.
-  get oldest(): number[] {
+  get oldest() {
     return this.normalizedInputs.map((_i, j) => j);
   }
-  get newest(): number[] {
+  get newest() {
     return this.oldest.reverse();
   }
   // exact - like blackjack from coinselect.
   // exact(biggest) will select one big utxo which is closer to targetValue+dust, if possible.
   // If not, it will accumulate largest utxo until value is close to targetValue+dust.
-  accumulate(indices: number[], exact = false, skipNegative = true, all = false): Accumulated {
+  accumulate(indices: number[], exact = false, skipNegative = true, all = false) {
+    const { feePerByte } = this.opts;
     // TODO: how to handle change addresses?
     // - cost of input
     // - cost of change output (if input requires change)
@@ -392,11 +449,10 @@ export class _Estimator {
     let num = 0;
     let inputsAmount = 0n;
     const targetAmount = this.amount;
-    const res: Set<number> = new Set();
+    const res = [];
     let fee;
     for (const idx of this.requiredIndices) {
       this.checkInputIdx(idx);
-      if (res.has(idx)) throw new Error('required input encountered multiple times'); // should not happen
       const { estimate, amount } = this.normalizedInputs[idx];
       let newWeight = weight + estimate.weight;
       if (!hasWitnesses && estimate.hasWitnesses) newWeight += 2; // enable witness if needed
@@ -406,21 +462,24 @@ export class _Estimator {
       if (estimate.hasWitnesses) hasWitnesses = true;
       num++;
       inputsAmount += amount;
-      res.add(idx);
+      res.push(idx);
       // inputsAmount is enough to cover cost of tx
-      if (!all && targetAmount + fee <= inputsAmount && num >= this.requiredIndices.length)
-        return { indices: Array.from(res), fee, weight: totalWeight, total: inputsAmount };
+      if (!all && targetAmount + fee < inputsAmount)
+        return { indices: res, fee, weight: totalWeight, total: inputsAmount };
     }
     for (const idx of indices) {
       this.checkInputIdx(idx);
-      if (res.has(idx)) continue; // skip required inputs
       const { estimate, amount, value } = this.normalizedInputs[idx];
       let newWeight = weight + estimate.weight;
       if (!hasWitnesses && estimate.hasWitnesses) newWeight += 2; // enable witness if needed
       const totalWeight = newWeight + 4 * CompactSizeLen.encode(num).length; // number of outputs can change weight
       fee = this.getSatoshi(totalWeight);
       // Best case scenario exact(biggest) -> we find biggest output, less than target+threshold
-      if (exact && amount + inputsAmount > targetAmount + fee + this.dust) continue; // skip if added value is bigger than dust
+      if (exact) {
+        const dust = this.dust * feePerByte;
+        // skip if added value is bigger than dust
+        if (amount + inputsAmount > targetAmount + fee + dust) continue;
+      }
       // Negative: cost of using input is more than value provided (negative)
       // By default 'blackjack' mode in coinselect doesn't use that, which means
       // it will use negative output if sorted by 'smallest'
@@ -429,20 +488,20 @@ export class _Estimator {
       if (estimate.hasWitnesses) hasWitnesses = true;
       num++;
       inputsAmount += amount;
-      res.add(idx);
+      res.push(idx);
       // inputsAmount is enough to cover cost of tx
-      if (!all && targetAmount + fee <= inputsAmount)
-        return { indices: Array.from(res), fee, weight: totalWeight, total: inputsAmount };
+      if (!all && targetAmount + fee < inputsAmount)
+        return { indices: res, fee, weight: totalWeight, total: inputsAmount };
     }
     if (all) {
       const newWeight = weight + 4 * CompactSizeLen.encode(num).length;
-      return { indices: Array.from(res), fee, weight: newWeight, total: inputsAmount };
+      return { indices: res, fee, weight: newWeight, total: inputsAmount };
     }
     return undefined;
   }
 
   // Works like coinselect default method
-  default(): Accumulated {
+  default() {
     const { biggest } = this;
     const exact = this.accumulate(biggest, true, false);
     if (exact) return exact;
@@ -520,8 +579,7 @@ export class _Estimator {
       for (const o of outputs)
         tx.addOutput({ ...o, script: getScript(o, this.opts, this.opts.network) });
     }
-    return Object.assign(res, { tx });
-    // return { ...res, tx: tx };
+    return { ...res, tx };
   }
 }
 

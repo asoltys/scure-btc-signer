@@ -104,24 +104,35 @@ export function taprootTweakPubkey(pubKey: Bytes, h: Bytes): [Bytes, number] {
 // Also used by bitcoin-core and bitcoinjs-lib
 export const TAPROOT_UNSPENDABLE_KEY: Bytes = sha256(Point.BASE.toBytes(false));
 
-export type BTC_NETWORK = {
-  bech32: string;
-  pubKeyHash: number;
-  scriptHash: number;
-  wif: number;
-};
-export const NETWORK: BTC_NETWORK = {
-  bech32: 'bc',
-  pubKeyHash: 0x00,
-  scriptHash: 0x05,
+export type BTC_NETWORK = typeof NETWORK;
+export const NETWORK = {
+  bech32: 'ex',
+  blech32: 'lq',
+  pubKeyHash: 0x39,
+  scriptHash: 0x27,
   wif: 0x80,
+  confidentialPrefix: 12,
+  assetHash: '6f0279e9ed041c3d710a9f57d0c02928416460c4b722ae3457a11eec381c526d',
 };
 
-export const TEST_NETWORK: BTC_NETWORK = {
-  bech32: 'tb',
-  pubKeyHash: 0x6f,
-  scriptHash: 0xc4,
+export const TEST_NETWORK: typeof NETWORK = {
+  bech32: 'tex',
+  blech32: 'tlq',
+  pubKeyHash: 0x24,
+  scriptHash: 0x13,
   wif: 0xef,
+  confidentialPrefix: 23,
+  assetHash: '144c654344aa716d6f3abcc1ca90e5641e4e2a7f633bc09fe3baf64585819a49',
+};
+
+export const REGTEST_NETWORK: typeof NETWORK = {
+  bech32: 'ert',
+  blech32: 'el',
+  pubKeyHash: 0xeb,
+  scriptHash: 0x4b,
+  wif: 0xef,
+  confidentialPrefix: 4,
+  assetHash: '5ac9f65c0efcc4775e0baec4ec03abdde22473cd3cf33c0419ca290e0751b225',
 };
 
 // Exported for tests, internal method
@@ -146,3 +157,24 @@ export function reverseObject<T extends Record<string, string | number>>(
 }
 
 export type ValueOf<T> = T[keyof T];
+
+export let amt2val = (n: BigInt) => {
+  let val = new Uint8Array(9);
+  let y = n.toString(16).padStart(16, '0');
+  for (let j = 0; j < 8; j++) {
+    val[j + 1] = parseInt(y.slice(j * 2, j * 2 + 2), 16);
+  }
+  val[0] = 1;
+  return val;
+};
+
+export let val2amt = (val: Uint8Array) => {
+  if (val.length !== 9 || val[0] !== 0x01) {
+    throw new Error('val2amt: expected 9-byte unconfidential value (prefix 0x01). Got ' + val.length + ' bytes with prefix 0x' + (val[0] ?? 0).toString(16));
+  }
+  let y = '';
+  for (let j = 1; j < 9; j++) {
+    y += val[j].toString(16).padStart(2, '0');
+  }
+  return BigInt('0x' + y);
+};

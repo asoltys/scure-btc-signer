@@ -211,26 +211,183 @@ export const RawWitness: P.CoderType<Bytes[]> = P.array(CompactSizeLen, VarBytes
 // Array of size <CompactSize>
 export const BTCArray = <T>(t: P.CoderType<T>): P.CoderType<T[]> => P.array(CompactSize, t);
 
-export const RawInput = P.struct({
-  txid: P.bytes(32, true), // hash(prev_tx),
-  index: P.U32LE, // output number of previous tx
-  finalScriptSig: VarBytes, // btc merges input and output script, executes it. If ok = tx passes
-  sequence: P.U32LE, // ?
+// Liquid constants
+const OUTPOINT_ISSUANCE_FLAG = 0x80000000;
+const OUTPOINT_PEGIN_FLAG = 0x40000000;
+const OUTPOINT_INDEX_MASK = 0x3fffffff;
+const MINUS_1 = 0xffffffff;
+
+export interface IssuanceData {
+  assetBlindingNonce: Uint8Array;
+  assetEntropy: Uint8Array;
+  assetAmount: Uint8Array;
+  tokenAmount: Uint8Array;
+}
+
+export const ConfidentialAsset: P.CoderType<Uint8Array> = P.wrap({
+  encodeStream: (w, value: Uint8Array) => {
+    for (let i = 0; i < value.length; i++) w.byte(value[i]);
+  },
+  decodeStream: (r) => {
+    const prefix = r.byte();
+    if (prefix === 0x01 || prefix === 0x0a || prefix === 0x0b) {
+      const rest = new Uint8Array(32);
+      for (let i = 0; i < 32; i++) rest[i] = r.byte();
+      const result = new Uint8Array(33);
+      result[0] = prefix;
+      result.set(rest, 1);
+      return result;
+    }
+    return new Uint8Array([prefix]);
+  },
 });
 
-export const RawOutput = P.struct({ amount: P.U64LE, script: VarBytes });
+export const ConfidentialValue: P.CoderType<Uint8Array> = P.wrap({
+  encodeStream: (w, value: Uint8Array) => {
+    for (let i = 0; i < value.length; i++) w.byte(value[i]);
+  },
+  decodeStream: (r) => {
+    const prefix = r.byte();
+    let extra = 0;
+    if (prefix === 0x01) extra = 8;
+    else if (prefix === 0x08 || prefix === 0x09) extra = 32;
+    const result = new Uint8Array(1 + extra);
+    result[0] = prefix;
+    for (let i = 0; i < extra; i++) result[1 + i] = r.byte();
+    return result;
+  },
+});
+
+export const ConfidentialNonce: P.CoderType<Uint8Array> = P.wrap({
+  encodeStream: (w, value: Uint8Array) => {
+    for (let i = 0; i < value.length; i++) w.byte(value[i]);
+  },
+  decodeStream: (r) => {
+    const prefix = r.byte();
+    if (prefix === 0x01 || prefix === 0x02 || prefix === 0x03) {
+      const result = new Uint8Array(33);
+      result[0] = prefix;
+      for (let i = 0; i < 32; i++) result[1 + i] = r.byte();
+      return result;
+    }
+    return new Uint8Array([prefix]);
+  },
+});
+
+export const SegwitFlag = P.wrap({
+  encodeStream: (w: P.Writer, value: boolean) => {
+    value ? w.byte(0x1) : w.byte(0x0);
+  },
+  decodeStream: (r: P.Reader) => {
+    return !!r.byte();
+  },
+});
+
+export const RawOutput = P.struct({
+  asset: ConfidentialAsset,
+  value: ConfidentialValue,
+  nonce: ConfidentialNonce,
+  script: VarBytes,
+});
+
+export const RawInput: P.CoderType<{
+  txid: Uint8Array;
+  index: number;
+  finalScriptSig: Uint8Array;
+  sequence: number;
+  issuance?: IssuanceData;
+  isPegin?: boolean;
+}> = P.wrap({
+  encodeStream: (w, value) => {
+    // txid (32 bytes, reversed)
+    const txid = value.txid;
+    for (let i = txid.length - 1; i >= 0; i--) w.byte(txid[i]);
+    // index with flags
+    let idx = value.index;
+    if (value.issuance) idx = (idx | OUTPOINT_ISSUANCE_FLAG) >>> 0;
+    if (value.isPegin) idx = (idx | OUTPOINT_PEGIN_FLAG) >>> 0;
+    w.byte(idx & 0xff);
+    w.byte((idx >>> 8) & 0xff);
+    w.byte((idx >>> 16) & 0xff);
+    w.byte((idx >>> 24) & 0xff);
+    // scriptSig
+    const ss = VarBytes.encode(value.finalScriptSig);
+    for (let i = 0; i < ss.length; i++) w.byte(ss[i]);
+    // sequence
+    const seq = value.sequence;
+    w.byte(seq & 0xff);
+    w.byte((seq >>> 8) & 0xff);
+    w.byte((seq >>> 16) & 0xff);
+    w.byte((seq >>> 24) & 0xff);
+    // issuance
+    if (value.issuance) {
+      const iss = value.issuance;
+      for (let i = 0; i < iss.assetBlindingNonce.length; i++) w.byte(iss.assetBlindingNonce[i]);
+      for (let i = 0; i < iss.assetEntropy.length; i++) w.byte(iss.assetEntropy[i]);
+      const am = ConfidentialValue.encode(iss.assetAmount);
+      for (let i = 0; i < am.length; i++) w.byte(am[i]);
+      const tm = ConfidentialValue.encode(iss.tokenAmount);
+      for (let i = 0; i < tm.length; i++) w.byte(tm[i]);
+    }
+  },
+  decodeStream: (r) => {
+    // txid (32 bytes, reversed)
+    const raw = new Uint8Array(32);
+    for (let i = 0; i < 32; i++) raw[i] = r.byte();
+    const txid = new Uint8Array(32);
+    for (let i = 0; i < 32; i++) txid[i] = raw[31 - i];
+    // index
+    let index = r.byte() | (r.byte() << 8) | (r.byte() << 16) | (r.byte() << 24);
+    index = index >>> 0; // unsigned
+    // scriptSig
+    const finalScriptSig = VarBytes.decodeStream(r);
+    // sequence
+    let sequence = r.byte() | (r.byte() << 8) | (r.byte() << 16) | (r.byte() << 24);
+    sequence = sequence >>> 0;
+    // check for issuance/pegin flags
+    let issuance: IssuanceData | undefined;
+    let isPegin = false;
+    if (index !== MINUS_1) {
+      if (index & OUTPOINT_ISSUANCE_FLAG) {
+        const assetBlindingNonce = new Uint8Array(32);
+        for (let i = 0; i < 32; i++) assetBlindingNonce[i] = r.byte();
+        const assetEntropy = new Uint8Array(32);
+        for (let i = 0; i < 32; i++) assetEntropy[i] = r.byte();
+        const assetAmount = ConfidentialValue.decodeStream(r);
+        const tokenAmount = ConfidentialValue.decodeStream(r);
+        issuance = { assetBlindingNonce, assetEntropy, assetAmount, tokenAmount };
+      }
+      if (index & OUTPOINT_PEGIN_FLAG) isPegin = true;
+      index = index & OUTPOINT_INDEX_MASK;
+    }
+    const result: any = { txid, index, finalScriptSig, sequence };
+    if (issuance) result.issuance = issuance;
+    if (isPegin) result.isPegin = isPegin;
+    return result;
+  },
+});
+
+const ConfidentialInputFields = P.struct({
+  issuanceRangeProof: VarBytes,
+  inflationRangeProof: VarBytes,
+  witness: RawWitness,
+  pegInWitness: RawWitness,
+});
+
+const ConfidentialOutputFields = P.struct({
+  surjectionProof: VarBytes,
+  rangeProof: VarBytes,
+});
 
 // https://en.bitcoin.it/wiki/Protocol_documentation#tx
 const _RawTx = P.struct({
   version: P.I32LE,
-  segwitFlag: P.flag(new Uint8Array([0x00, 0x01])),
+  segwitFlag: SegwitFlag,
   inputs: BTCArray(RawInput),
   outputs: BTCArray(RawOutput),
-  witnesses: P.flagged('segwitFlag', P.array('inputs/length', RawWitness)),
-  // < 500000000	Block number at which this transaction is unlocked
-  // >= 500000000	UNIX timestamp at which this transaction is unlocked
-  // Handled as part of PSBTv2
   lockTime: P.U32LE,
+  witnesses: P.flagged('segwitFlag', P.array('inputs/length', ConfidentialInputFields)),
+  outs: P.flagged('segwitFlag', P.array('outputs/length', ConfidentialOutputFields)),
 });
 
 function validateRawTx(tx: P.UnwrapCoder<typeof _RawTx>) {
@@ -238,11 +395,4 @@ function validateRawTx(tx: P.UnwrapCoder<typeof _RawTx>) {
     throw new Error('Segwit flag with empty witnesses array');
   return tx;
 }
-export const RawTx: typeof _RawTx = P.validate(_RawTx, validateRawTx);
-// Pre-SegWit serialization format (for PSBTv0)
-export const RawOldTx = P.struct({
-  version: P.I32LE,
-  inputs: BTCArray(RawInput),
-  outputs: BTCArray(RawOutput),
-  lockTime: P.U32LE,
-});
+export const RawTx = P.validate(_RawTx, validateRawTx);

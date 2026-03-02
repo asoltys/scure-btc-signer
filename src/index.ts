@@ -1,31 +1,26 @@
 /*! scure-btc-signer - MIT License (c) 2022 Paul Miller (paulmillr.com) */
 import {
-  compareBytes,
-  concatBytes,
   isBytes,
+  concatBytes,
+  compareBytes,
   pubSchnorr,
   randomPrivateKeyBytes,
   taprootTweakPubkey,
-} from './utils.ts';
-// should multisig be exported as classicMultisig?
+} from './utils.js';
 // prettier-ignore
 export {
-  multisig,
-  p2ms, p2pk, p2pkh, p2sh, p2tr, p2tr_ms, p2tr_ns, p2tr_pk, p2wpkh, p2wsh
-} from './payment.ts';
+  p2pk, p2pkh, p2sh, p2ms, p2wsh, p2wpkh, p2tr, p2tr_ns, p2tr_ms, p2tr_pk,
+  multisig // => classicMultisig?
+} from './payment.js';
+// prettier-ignore
 export {
-  CompactSize,
-  MAX_SCRIPT_BYTE_LENGTH,
-  OP,
-  RawTx,
-  RawWitness,
-  Script,
-  ScriptNum,
-} from './script.ts';
-export type { ScriptType } from './script.ts';
-export { getInputType, Transaction } from './transaction.ts';
-export { NETWORK, TAPROOT_UNSPENDABLE_KEY, TEST_NETWORK } from './utils.ts';
-export { selectUTXO } from './utxo.ts';
+  OP, RawTx, CompactSize,
+  Script, ScriptNum, MAX_SCRIPT_BYTE_LENGTH,
+} from './script.js';
+export type { ScriptType, IssuanceData } from './script.js';
+export { Transaction } from './transaction.js';
+export { getInputType, selectUTXO } from './utxo.js';
+export { NETWORK, REGTEST_NETWORK, TEST_NETWORK, TAPROOT_UNSPENDABLE_KEY } from './utils.js';
 
 export const utils = {
   isBytes,
@@ -36,18 +31,20 @@ export const utils = {
   taprootTweakPubkey,
 };
 
+// Utils
+// prettier-ignore
 export {
-  _sortPubkeys,
-  Address,
-  combinations,
-  getAddress,
-  OutScript,
-  sortedMultisig,
-  taprootListToTree,
-  WIF,
-} from './payment.ts'; // remove
-// remove
-export type { CustomScript, OptScript } from './payment.ts';
-export { _DebugPSBT, TaprootControlBlock } from './psbt.ts'; // remove
-export { bip32Path, Decimal, DEFAULT_SEQUENCE, PSBTCombine, SigHash } from './transaction.ts'; // remove
-export { _cmpBig, _Estimator } from './utxo.ts';
+  Address, getAddress, WIF,
+  taprootListToTree, OutScript, _sortPubkeys, sortedMultisig, combinations
+} from './payment.js'; // remove
+export type { OptScript, CustomScript } from './payment.js';
+
+export { _DebugPSBT, TaprootControlBlock, RawPSET, _RawPSET } from './psbt.js'; // remove
+export { Decimal, bip32Path, SigHash, PSBTCombine, DEFAULT_SEQUENCE } from './transaction.js'; // remove
+export { amt2val, val2amt } from './utils.js';
+export { _cmpBig, _Estimator } from './utxo.js';
+export { toConfidential, fromConfidential, isConfidential } from './address.js';
+export type { ConfidentialResult } from './address.js';
+export { Confidential } from './confidential.js';
+export type { UnblindOutputResult, ConfidentialOutput } from './confidential.js';
+export * from './zkp.js';

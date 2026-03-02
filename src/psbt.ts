@@ -1,26 +1,16 @@
 import { hex } from '@scure/base';
 import * as P from 'micro-packed';
-import {
-  CompactSize,
-  CompactSizeLen,
-  RawOldTx,
-  RawOutput,
-  RawTx,
-  RawWitness,
-  VarBytes,
-} from './script.ts';
-import { type Bytes, compareBytes, equalBytes, PubT, validatePubkey } from './utils.ts';
+import { CompactSize, CompactSizeLen, RawOutput, RawTx, RawWitness, VarBytes } from './script.js';
+import { Transaction } from './transaction.js'; // circular
+import { compareBytes, PubT, validatePubkey, equalBytes } from './utils.js';
+import type { Bytes } from './utils.js';
 
 // PSBT BIP174, BIP370, BIP371
 
 // Can be 33 or 64 bytes
-const PubKeyECDSA: P.CoderType<Bytes> = P.validate(P.bytes(null), (pub) =>
-  validatePubkey(pub, PubT.ecdsa)
-);
-const PubKeySchnorr: P.CoderType<Bytes> = P.validate(P.bytes(32), (pub) =>
-  validatePubkey(pub, PubT.schnorr)
-);
-const SignatureSchnorr: P.CoderType<Bytes> = P.validate(P.bytes(null), (sig) => {
+const PubKeyECDSA = P.validate(P.bytes(null), (pub) => validatePubkey(pub, PubT.ecdsa));
+const PubKeySchnorr = P.validate(P.bytes(32), (pub) => validatePubkey(pub, PubT.schnorr));
+const SignatureSchnorr = P.validate(P.bytes(null), (sig) => {
   if (sig.length !== 64 && sig.length !== 65)
     throw new Error('Schnorr signature should be 64 or 65 bytes long');
   return sig;
@@ -61,9 +51,9 @@ const tapTree = P.array(
   })
 );
 
-const BytesInf: P.CoderType<Bytes> = P.bytes(null); // Bytes will conflict with Bytes type
-const Bytes20: P.CoderType<Bytes> = P.bytes(20);
-const Bytes32: P.CoderType<Bytes> = P.bytes(32);
+const BytesInf = P.bytes(null); // Bytes will conflict with Bytes type
+const Bytes20 = P.bytes(20);
+const Bytes32 = P.bytes(32);
 // versionsRequiringExclusing = !versionsAllowsInclusion (as set)
 // {name: [tag, keyCoder, valueCoder, versionsRequiringInclusion, versionsRequiringExclusing, versionsAllowsInclusion, silentIgnore]}
 // SilentIgnore: we use some v2 fields for v1 representation too, so we just clean them before serialize
@@ -71,7 +61,7 @@ const Bytes32: P.CoderType<Bytes> = P.bytes(32);
 // Tables from BIP-0174 (https://github.com/bitcoin/bips/blob/master/bip-0174.mediawiki)
 // prettier-ignore
 export const PSBTGlobal = {
-  unsignedTx:       [0x00, false,      RawOldTx,          [0], [0],    false],
+  unsignedTx:       [0x00, false,      RawTx,          [0], [0],    false],
   xpub:             [0x01, GlobalXPUB, BIP32Der,       [],  [0, 2], false],
   txVersion:        [0x02, false,      P.U32LE,        [2], [2],    false],
   fallbackLocktime: [0x03, false,      P.U32LE,        [],  [2],    false],
@@ -109,17 +99,24 @@ export const PSBTInput = {
   tapInternalKey:         [0x17, false,               PubKeySchnorr,    [],  [0, 2], false],
   tapMerkleRoot:          [0x18, false,               Bytes32,          [],  [0, 2], false],
   proprietary:            [0xfc, BytesInf,            BytesInf,         [],  [0, 2], false],
+  issuanceRangeProof:     [0xfc, false,               BytesInf,         [],  [0, 2], false],
+  inflationRangeProof:    [0xfc, false,               BytesInf,         [],  [0, 2], false],
+  witness:                [0xfc, false,               RawWitness,         [],  [0, 2], false],
+  pegInWitness:           [0xfc, false,               RawWitness,         [],  [0, 2], false],
 } as const;
 // All other keys removed when finalizing
 export const PSBTInputFinalKeys: (keyof TransactionInput)[] = [
-  'txid',
-  'sequence',
-  'index',
-  'witnessUtxo',
-  'nonWitnessUtxo',
-  'finalScriptSig',
-  'finalScriptWitness',
-  'unknown',
+    'txid',
+    'sequence',
+    'index',
+    'witnessUtxo',
+    'nonWitnessUtxo',
+    'finalScriptSig',
+    'inflationRangeProof',
+    'issuanceRangeProof',
+    'witness',
+    'pegInWitness',
+    'unknown',
 ];
 
 // Can be modified even on signed input
@@ -142,6 +139,11 @@ export const PSBTOutput = {
   tapTree:            [0x06, false,         tapTree,         [],  [0, 2], false],
   tapBip32Derivation: [0x07, PubKeySchnorr, TaprootBIP32Der, [],  [0, 2], false],
   proprietary:        [0xfc, BytesInf,      BytesInf,        [],  [0, 2], false],
+  asset:              [0xfc, false,         BytesInf,        [2],  [2], true],
+  value:              [0xfc, false,         BytesInf,        [2],  [2], true],
+  nonce:              [0xfc, false,         BytesInf,        [2],  [2], true],
+  surjectionProof:    [0xfc, false,         BytesInf,        [2],  [2], false],
+  rangeProof:         [0xfc, false,         BytesInf,        [2],  [2], false],
 } as const;
 
 // Can be modified even on signed input
@@ -177,12 +179,7 @@ function PSBTKeyInfo(info: PSBTKeyMapInfo) {
 
 type PSBTKeyMap = Record<string, PSBTKeyMapInfo>;
 
-const PSBTUnknownKey: P.CoderType<
-  P.StructInput<{
-    type: number;
-    key: Bytes;
-  }>
-> = P.struct({ type: CompactSizeLen, key: P.bytes(null) });
+const PSBTUnknownKey = P.struct({ type: CompactSizeLen, key: P.bytes(null) });
 type PSBTUnknownFields = { unknown?: [P.UnwrapCoder<typeof PSBTUnknownKey>, Bytes][] };
 export type PSBTKeyMapKeys<T extends PSBTKeyMap> = {
   -readonly [K in keyof T]?: T[K][1] extends false
@@ -281,6 +278,17 @@ export const PSBTInputCoder = P.validate(PSBTKeyMap(PSBTInput), (i) => {
     (i.requiredHeightLocktime <= 0 || i.requiredHeightLocktime >= 500000000)
   )
     throw new Error(`validateInput: wrong heighLocktime=${i.requiredHeightLocktime}`);
+
+  if (i.nonWitnessUtxo && i.index !== undefined) {
+    const last = i.nonWitnessUtxo.outputs.length - 1;
+    if (i.index > last) throw new Error(`validateInput: index(${i.index}) not in nonWitnessUtxo`);
+    const prevOut = i.nonWitnessUtxo.outputs[i.index];
+    if (
+      i.witnessUtxo &&
+      (!equalBytes(i.witnessUtxo.script, prevOut.script) || !equalBytes(i.witnessUtxo.value, prevOut.value))
+    )
+      throw new Error('validateInput: witnessUtxo different from nonWitnessUtxo');
+  }
   if (i.tapLeafScript) {
     // tap leaf version appears here twice: in control block and at the end of script
     for (const [k, v] of i.tapLeafScript) {
@@ -289,6 +297,28 @@ export const PSBTInputCoder = P.validate(PSBTKeyMap(PSBTInput), (i) => {
       if (v[v.length - 1] & 1)
         throw new Error('validateInput: tapLeafScript version has parity bit!');
     }
+  }
+  // Validate txid for nonWitnessUtxo is correct
+  if (i.nonWitnessUtxo && i.index !== undefined && i.txid) {
+    const outputs = i.nonWitnessUtxo.outputs;
+    if (outputs.length - 1 < i.index) throw new Error('nonWitnessUtxo: incorect output index');
+    // At this point, we are using previous tx output to create new input.
+    // Script safety checks are unnecessary:
+    // - User has no control over previous tx. If somebody send money in same tx
+    //   as unspendable output, we still want user able to spend money
+    // - We still want some checks to notify user about possible errors early
+    //   in case user wants to use wrong input by mistake
+    // - Worst case: tx will be rejected by nodes. Still better than disallowing user
+    //   to spend real input, no matter how broken it looks
+    const tx = Transaction.fromRaw(RawTx.encode(i.nonWitnessUtxo), {
+      allowUnknownOutputs: true,
+      disableScriptCheck: true,
+      allowUnknownInputs: true,
+    });
+    const txid = hex.encode(i.txid);
+    // PSBTv2 vectors have non-final tx in inputs
+    if (tx.isFinal && tx.id !== txid)
+      throw new Error(`nonWitnessUtxo: wrong txid, exp=${txid} got=${tx.id}`);
   }
   return i;
 });
@@ -317,14 +347,18 @@ export const PSBTOutputCoder = P.validate(PSBTKeyMap(PSBTOutput), (o) => {
 export type TransactionOutput = P.UnwrapCoder<typeof PSBTOutputCoder>;
 export type TransactionOutputUpdate = ExtendType<TransactionOutput, { script?: string }>;
 export type TransactionOutputRequired = {
+  asset: Bytes,
+  value: Bytes,
+  nonce: Bytes,
   script: Bytes;
-  amount: bigint;
 };
 
 const PSBTGlobalCoder = P.validate(PSBTKeyMap(PSBTGlobal), (g) => {
   const version = g.version || 0;
   if (version === 0) {
     if (!g.unsignedTx) throw new Error('PSBTv0: missing unsignedTx');
+    if (g.unsignedTx.segwitFlag || g.unsignedTx.witnesses)
+      throw new Error('PSBTv0: witness in unsingedTx');
     for (const inp of g.unsignedTx.inputs)
       if (inp.finalScriptSig && inp.finalScriptSig.length)
         throw new Error('PSBTv0: input scriptSig found in unsignedTx');
@@ -381,7 +415,7 @@ export function cleanPSBTFields<T extends PSBTKeyMap>(
   version: number,
   info: T,
   lst: PSBTKeyMapKeys<T>
-): PSBTKeyMapKeys<T> {
+) {
   const out: PSBTKeyMapKeys<T> = {};
   for (const _k in lst) {
     const k = _k as string & keyof PSBTKeyMapKeys<T>;
@@ -424,8 +458,7 @@ export function mergeKeyMap<T extends PSBTKeyMap>(
   psbtEnum: T,
   val: PSBTKeyMapKeys<T>,
   cur?: PSBTKeyMapKeys<T>,
-  allowedFields?: (keyof PSBTKeyMapKeys<T>)[],
-  allowUnknown?: boolean
+  allowedFields?: (keyof PSBTKeyMapKeys<T>)[]
 ): PSBTKeyMapKeys<T> {
   const res: PSBTKeyMapKeys<T> = { ...cur, ...val };
   // All arguments can be provided as hex
@@ -484,15 +517,301 @@ export function mergeKeyMap<T extends PSBTKeyMap>(
         throw new Error(`Cannot change signed field=${k}`);
     }
   }
-  // Remove unknown keys except the "unknown" array if allowUnknown is true
-  for (const k in res) {
-    if (!psbtEnum[k]) {
-      if (allowUnknown && k === 'unknown') continue;
-      delete res[k];
-    }
-  }
+  // Remove unknown keys
+  for (const k in res) if (!psbtEnum[k]) delete res[k];
   return res;
 }
 
 export const RawPSBTV0 = P.validate(_RawPSBTV0, validatePSBT);
 export const RawPSBTV2 = P.validate(_RawPSBTV2, validatePSBT);
+
+// === PSET v2 (Partially Signed Elements Transaction) ===
+
+const PSET_MAGIC = new Uint8Array([0x70, 0x73, 0x65, 0x74]); // "pset"
+
+function psetProprietaryKey(subType: number, keyData?: Uint8Array): Uint8Array {
+  const baseLen = 6; // 1(compactsize=4) + 4("pset") + 1(subtype)
+  const extraLen = keyData ? keyData.length : 0;
+  const result = new Uint8Array(baseLen + extraLen);
+  result[0] = 4;
+  result.set(PSET_MAGIC, 1);
+  result[5] = subType;
+  if (keyData) result.set(keyData, 6);
+  return result;
+}
+
+function parsePsetProprietaryKey(
+  keyData: Uint8Array
+): { subType: number; extra: Uint8Array } | undefined {
+  if (keyData.length < 6) return undefined;
+  if (keyData[0] !== 4) return undefined;
+  for (let i = 0; i < 4; i++) {
+    if (keyData[1 + i] !== PSET_MAGIC[i]) return undefined;
+  }
+  return { subType: keyData[5], extra: keyData.slice(6) };
+}
+
+// PSET Input proprietary subtypes
+const PSETInputTypes = {
+  ISSUANCE_VALUE: 0,
+  ISSUANCE_VALUE_COMMITMENT: 1,
+  ISSUANCE_VALUE_RANGEPROOF: 2,
+  ISSUANCE_INFLATION_KEYS_RANGEPROOF: 3,
+  PEGIN_TX: 4,
+  PEGIN_TXOUT_PROOF: 5,
+  PEGIN_GENESIS_HASH: 6,
+  PEGIN_CLAIM_SCRIPT: 7,
+  PEGIN_VALUE: 8,
+  PEGIN_WITNESS: 9,
+  ISSUANCE_INFLATION_KEYS: 10,
+  ISSUANCE_INFLATION_KEYS_COMMITMENT: 11,
+  ISSUANCE_BLINDING_NONCE: 12,
+  ISSUANCE_ASSET_ENTROPY: 13,
+  UTXO_RANGEPROOF: 14,
+  ISSUANCE_BLIND_VALUE_PROOF: 15,
+  ISSUANCE_BLIND_INFLATION_KEYS_PROOF: 16,
+  EXPLICIT_VALUE: 17,
+  VALUE_PROOF: 18,
+  EXPLICIT_ASSET: 19,
+  ASSET_PROOF: 20,
+  BLINDED_ISSUANCE: 21,
+} as const;
+
+// PSET Output proprietary subtypes
+const PSETOutputTypes = {
+  VALUE_COMMITMENT: 1,
+  ASSET: 2,
+  ASSET_COMMITMENT: 3,
+  VALUE_RANGEPROOF: 4,
+  ASSET_SURJECTION_PROOF: 5,
+  BLINDING_PUBKEY: 6,
+  ECDH_PUBKEY: 7,
+  BLINDER_INDEX: 8,
+  BLIND_VALUE_PROOF: 9,
+  BLIND_ASSET_PROOF: 10,
+} as const;
+
+// PSET Global proprietary subtypes
+const PSETGlobalTypes = {
+  SCALAR: 0,
+  MODIFIABLE: 1,
+} as const;
+
+// Proprietary field maps: subtype → [fieldName, valueCoder] or [fieldName, valueCoder, keyDataCoder]
+type PSETPropEntry =
+  | readonly [string, P.CoderType<any>]
+  | readonly [string, P.CoderType<any>, P.CoderType<any>];
+
+// prettier-ignore
+const PSETInputProprietaryMap: Record<number, PSETPropEntry> = {
+  [PSETInputTypes.ISSUANCE_VALUE]:                      ['issuanceValue', P.I64LE],
+  [PSETInputTypes.ISSUANCE_VALUE_COMMITMENT]:           ['issuanceValueCommitment', BytesInf],
+  [PSETInputTypes.ISSUANCE_VALUE_RANGEPROOF]:           ['issuanceValueRangeproof', BytesInf],
+  [PSETInputTypes.ISSUANCE_INFLATION_KEYS_RANGEPROOF]:  ['issuanceInflationKeysRangeproof', BytesInf],
+  [PSETInputTypes.PEGIN_TX]:                            ['peginTx', BytesInf],
+  [PSETInputTypes.PEGIN_TXOUT_PROOF]:                   ['peginTxoutProof', BytesInf],
+  [PSETInputTypes.PEGIN_GENESIS_HASH]:                  ['peginGenesisHash', Bytes32],
+  [PSETInputTypes.PEGIN_CLAIM_SCRIPT]:                  ['peginClaimScript', BytesInf],
+  [PSETInputTypes.PEGIN_VALUE]:                         ['peginValue', P.I64LE],
+  [PSETInputTypes.PEGIN_WITNESS]:                       ['peginWitness', RawWitness],
+  [PSETInputTypes.ISSUANCE_INFLATION_KEYS]:             ['issuanceInflationKeys', P.I64LE],
+  [PSETInputTypes.ISSUANCE_INFLATION_KEYS_COMMITMENT]:  ['issuanceInflationKeysCommitment', BytesInf],
+  [PSETInputTypes.ISSUANCE_BLINDING_NONCE]:             ['issuanceBlindingNonce', Bytes32],
+  [PSETInputTypes.ISSUANCE_ASSET_ENTROPY]:              ['issuanceAssetEntropy', Bytes32],
+  [PSETInputTypes.UTXO_RANGEPROOF]:                     ['utxoRangeproof', BytesInf],
+  [PSETInputTypes.ISSUANCE_BLIND_VALUE_PROOF]:          ['issuanceBlindValueProof', BytesInf],
+  [PSETInputTypes.ISSUANCE_BLIND_INFLATION_KEYS_PROOF]: ['issuanceBlindInflationKeysProof', BytesInf],
+  [PSETInputTypes.EXPLICIT_VALUE]:                      ['explicitValue', P.I64LE],
+  [PSETInputTypes.VALUE_PROOF]:                         ['valueProof', BytesInf],
+  [PSETInputTypes.EXPLICIT_ASSET]:                      ['explicitAsset', Bytes32],
+  [PSETInputTypes.ASSET_PROOF]:                         ['assetProof', BytesInf],
+  [PSETInputTypes.BLINDED_ISSUANCE]:                    ['blindedIssuance', P.U8],
+};
+
+// prettier-ignore
+const PSETOutputProprietaryMap: Record<number, PSETPropEntry> = {
+  [PSETOutputTypes.VALUE_COMMITMENT]:       ['valueCommitment', BytesInf],
+  [PSETOutputTypes.ASSET]:                  ['psetAsset', BytesInf],
+  [PSETOutputTypes.ASSET_COMMITMENT]:       ['assetCommitment', BytesInf],
+  [PSETOutputTypes.VALUE_RANGEPROOF]:       ['valueRangeproof', BytesInf],
+  [PSETOutputTypes.ASSET_SURJECTION_PROOF]: ['assetSurjectionProof', BytesInf],
+  [PSETOutputTypes.BLINDING_PUBKEY]:        ['blindingPubkey', BytesInf],
+  [PSETOutputTypes.ECDH_PUBKEY]:            ['ecdhPubkey', BytesInf],
+  [PSETOutputTypes.BLINDER_INDEX]:          ['blinderIndex', P.U32LE],
+  [PSETOutputTypes.BLIND_VALUE_PROOF]:      ['blindValueProof', BytesInf],
+  [PSETOutputTypes.BLIND_ASSET_PROOF]:      ['blindAssetProof', BytesInf],
+};
+
+const PSETGlobalProprietaryMap: Record<number, PSETPropEntry> = {
+  [PSETGlobalTypes.SCALAR]: ['scalar', BytesInf, Bytes32],
+  [PSETGlobalTypes.MODIFIABLE]: ['modifiable', P.U8],
+};
+
+function PSETKeyMapCodec(
+  baseEnum: Record<string, PSBTKeyMapInfo>,
+  propMap: Record<number, PSETPropEntry>
+): P.CoderType<Record<string, any>> {
+  // Standard type dispatch (excluding 0xfc proprietary entries)
+  const standardEntries: Record<string, PSBTKeyMapInfo> = {};
+  const byType: Record<number, [string, PSBTKeyCoder, P.CoderType<any>]> = {};
+  for (const k in baseEnum) {
+    const [num] = baseEnum[k];
+    if (num === 0xfc) continue;
+    standardEntries[k] = baseEnum[k];
+    byType[num] = [k, baseEnum[k][1], baseEnum[k][2]];
+  }
+
+  return P.wrap({
+    encodeStream: (w: P.Writer, value: Record<string, any>) => {
+      const out: P.UnwrapCoder<typeof PSBTKeyPair> = [];
+
+      // Standard PSBT fields
+      for (const name in standardEntries) {
+        const val = value[name];
+        if (val === undefined) continue;
+        const [type, kc, vc] = standardEntries[name];
+        if (!kc) {
+          out.push({ key: { type, key: P.EMPTY }, value: vc.encode(val) });
+        } else {
+          const kv: [Bytes, Bytes][] = val.map(([k, v]: [any, any]) => [
+            kc.encode(k),
+            vc.encode(v),
+          ]);
+          kv.sort((a, b) => compareBytes(a[0], b[0]));
+          for (const [key, value] of kv) out.push({ key: { key, type }, value });
+        }
+      }
+
+      // PSET proprietary fields
+      for (const _subtype in propMap) {
+        const subtype = Number(_subtype);
+        const entry = propMap[subtype];
+        const [name, vc] = entry;
+        const kdc = entry.length > 2 ? entry[2] : undefined;
+        const val = value[name];
+        if (val === undefined) continue;
+        if (kdc) {
+          // Keyed field (e.g. SCALAR): val is [[keyData, value], ...]
+          const kv: [Bytes, Bytes][] = val.map(([k, v]: [any, any]) => [
+            psetProprietaryKey(subtype, kdc.encode(k)),
+            vc.encode(v),
+          ]);
+          kv.sort((a, b) => compareBytes(a[0], b[0]));
+          for (const [key, value] of kv) out.push({ key: { type: 0xfc, key }, value });
+        } else {
+          out.push({
+            key: { type: 0xfc, key: psetProprietaryKey(subtype) },
+            value: vc.encode(val),
+          });
+        }
+      }
+
+      // Non-PSET proprietary
+      if (value['proprietary']) {
+        for (const [k, v] of value['proprietary']) {
+          out.push({ key: { type: 0xfc, key: k }, value: v });
+        }
+      }
+
+      // Unknown fields
+      if (value['unknown']) {
+        const sorted = [...value['unknown']];
+        sorted.sort((a: any, b: any) => compareBytes(a[0].key, b[0].key));
+        for (const [k, v] of sorted) out.push({ key: k, value: v });
+      }
+
+      PSBTKeyPair.encodeStream(w, out);
+    },
+
+    decodeStream: (r: P.Reader): Record<string, any> => {
+      const raw = PSBTKeyPair.decodeStream(r);
+      const out: any = {};
+      const noKey: Record<string, true> = {};
+
+      for (const elm of raw) {
+        let name = 'unknown';
+        let key: any = elm.key.key;
+        let value: any = elm.value;
+
+        if (elm.key.type === 0xfc) {
+          const parsed = parsePsetProprietaryKey(key);
+          if (parsed && propMap[parsed.subType] !== undefined) {
+            const entry = propMap[parsed.subType];
+            const [fieldName, vc] = entry;
+            const kdc = entry.length > 2 ? entry[2] : undefined;
+            name = fieldName;
+            if (kdc) {
+              key = kdc.decode(parsed.extra);
+              value = vc.decode(value);
+              if (!out[name]) out[name] = [];
+              out[name].push([key, value]);
+            } else {
+              if (parsed.extra.length > 0) {
+                throw new Error(`PSET: unexpected extra key data for ${name}`);
+              }
+              value = vc.decode(value);
+              if (out[name] !== undefined) throw new Error(`PSET: duplicate field ${name}`);
+              out[name] = value;
+              noKey[name] = true;
+            }
+            continue;
+          }
+          // Non-PSET proprietary
+          if (!out.proprietary) out.proprietary = [];
+          out.proprietary.push([key, value]);
+          continue;
+        }
+
+        if (byType[elm.key.type]) {
+          const [_name, kc, vc] = byType[elm.key.type];
+          name = _name;
+          if (!kc && key.length) {
+            throw new Error(
+              `PSET: Non-empty key for ${name} (key=${hex.encode(key)} value=${hex.encode(value)}`
+            );
+          }
+          key = kc ? kc.decode(key) : undefined;
+          value = vc.decode(value);
+          if (!kc) {
+            if (out[name]) throw new Error(`PSET: Same keys: ${name}`);
+            out[name] = value;
+            noKey[name] = true;
+            continue;
+          }
+        } else {
+          key = { type: elm.key.type, key: elm.key.key };
+        }
+
+        if (noKey[name])
+          throw new Error(`PSET: Key type with empty key and no key=${name}`);
+        if (!out[name]) out[name] = [];
+        out[name].push([key, value]);
+      }
+
+      return out;
+    },
+  });
+}
+
+const PSETInputCodec = PSETKeyMapCodec(PSBTInput, PSETInputProprietaryMap);
+const PSETOutputCodec = PSETKeyMapCodec(PSBTOutput, PSETOutputProprietaryMap);
+const PSETGlobalCodec = PSETKeyMapCodec(PSBTGlobal, PSETGlobalProprietaryMap);
+
+function validatePSETData(tx: any) {
+  const inputCount = tx.global.inputCount;
+  if (inputCount === undefined) throw new Error('PSET: missing inputCount');
+  if (tx.inputs.length < inputCount) throw new Error('PSET: not enough inputs');
+  const outputCount = tx.global.outputCount;
+  if (outputCount === undefined) throw new Error('PSET: missing outputCount');
+  if (tx.outputs.length < outputCount) throw new Error('PSET: not enough outputs');
+  return tx;
+}
+
+export const _RawPSET = P.struct({
+  magic: P.magic(P.string(new Uint8Array([0xff])), 'pset'),
+  global: PSETGlobalCodec,
+  inputs: P.array('global/inputCount', PSETInputCodec),
+  outputs: P.array('global/outputCount', PSETOutputCodec),
+});
+
+export const RawPSET = P.validate(_RawPSET, validatePSETData);
