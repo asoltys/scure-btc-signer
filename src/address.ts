@@ -2,9 +2,9 @@
 // Supports both segwit (blech32) and legacy (base58check) confidential addresses.
 
 import { bech32, bech32m, createBase58check } from '@scure/base';
-import { encodeAddress, decodeAddress } from './blech32.js';
-import { NETWORK, sha256 } from './utils.js';
-import { OutScript } from './payment.js';
+import { encodeAddress, decodeAddress } from './blech32.ts';
+import { NETWORK, sha256 } from './utils.ts';
+import { OutScript } from './payment.ts';
 
 const base58check = createBase58check(sha256);
 

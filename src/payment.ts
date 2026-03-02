@@ -1,14 +1,14 @@
 import { hex, bech32, bech32m, createBase58check } from '@scure/base';
 import type { Coder } from '@scure/base';
 import * as P from 'micro-packed';
-import { TaprootControlBlock } from './psbt.js';
-import type { TransactionInput } from './psbt.js';
-import { OpToNum, Script, VarBytes } from './script.js';
-import type { ScriptType } from './script.js';
-import { NETWORK } from './utils.js';
-import type { Bytes } from './utils.js';
-import * as u from './utils.js';
-import { decodeAddress as blech32DecodeAddress } from './blech32.js';
+import { TaprootControlBlock } from './psbt.ts';
+import type { TransactionInput } from './psbt.ts';
+import { OpToNum, Script, VarBytes } from './script.ts';
+import type { ScriptType } from './script.ts';
+import { NETWORK } from './utils.ts';
+import type { Bytes } from './utils.ts';
+import * as u from './utils.ts';
+import { decodeAddress as blech32DecodeAddress } from './blech32.ts';
 
 // We need following items:
 // - encode/decode output script
@@ -725,7 +725,7 @@ export function Address(network = NETWORK) {
       if (address.length < 14 || address.length > 200) throw new Error('Invalid address length');
       const lower = address.toLowerCase();
       // Bech32 (unconfidential segwit)
-      if (network.bech32 && lower.startsWith(network.bech32)) {
+      if (network.bech32 && lower.startsWith(`${network.bech32}1`)) {
         let res;
         try {
           res = bech32.decode(address as `${string}1${string}`);
@@ -745,7 +745,7 @@ export function Address(network = NETWORK) {
         else throw new Error('Unknown witness program');
       }
       // Blech32 (confidential segwit) — extract script, ignore blinding key
-      if (network.blech32 && lower.startsWith(network.blech32)) {
+      if (network.blech32 && lower.startsWith(`${network.blech32}1`)) {
         const { witness, witnessVersion } = blech32DecodeAddress(address);
         if (witnessVersion === 0 && witness.length === 32) return { type: 'wsh', hash: witness };
         else if (witnessVersion === 0 && witness.length === 20) return { type: 'wpkh', hash: witness };

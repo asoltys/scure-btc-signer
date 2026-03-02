@@ -1,11 +1,11 @@
 import { hex } from '@scure/base';
 import * as P from 'micro-packed';
-import { Address, OutScript, checkScript, tapLeafHash } from './payment.js';
-import type { CustomScript } from './payment.js';
-import * as psbt from './psbt.js';
-import { CompactSizeLen, RawOutput, RawTx, RawWitness, Script, VarBytes } from './script.js';
-import { DEFAULT_SEQUENCE, inputBeforeSign, SignatureHash, Transaction } from './transaction.js'; // circular
-import type { TxOpts } from './transaction.js';
+import { Address, OutScript, checkScript, tapLeafHash } from './payment.ts';
+import type { CustomScript } from './payment.ts';
+import * as psbt from './psbt.ts';
+import { CompactSizeLen, RawOutput, RawTx, RawWitness, Script, VarBytes } from './script.ts';
+import { DEFAULT_SEQUENCE, inputBeforeSign, SignatureHash, Transaction } from './transaction.ts'; // circular
+import type { TxOpts } from './transaction.ts';
 import {
   val2amt,
   NETWORK,
@@ -14,9 +14,9 @@ import {
   isBytes,
   TAPROOT_UNSPENDABLE_KEY,
   sha256,
-} from './utils.js';
-import type { Bytes } from './utils.js';
-import { validatePubkey, PubT } from './utils.js';
+} from './utils.ts';
+import type { Bytes } from './utils.ts';
+import { validatePubkey, PubT } from './utils.ts';
 
 // Normalizes input
 export function getPrevOut(input: psbt.TransactionInput): P.UnwrapCoder<typeof RawOutput> {

@@ -1,6 +1,6 @@
 // Confidential transaction blinding/unblinding for Liquid.
 
-import { sha256, concatBytes } from './utils.js';
+import { sha256, concatBytes } from './utils.ts';
 import {
   generatorGenerate,
   generatorGenerateBlinded,
@@ -12,7 +12,7 @@ import {
   surjectionProofGenerate,
   surjectionProofVerify,
   ecdhUnhashedSHA256,
-} from './zkp.js';
+} from './zkp.ts';
 
 const ZERO = new Uint8Array(32);
 

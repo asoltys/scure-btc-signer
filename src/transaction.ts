@@ -1,15 +1,15 @@
 import * as P from 'micro-packed';
 import { hex } from '@scure/base';
 
-import { Address, OutScript, checkScript, tapLeafHash } from './payment.js';
-import type { CustomScript } from './payment.js';
-import * as psbt from './psbt.js'; // circular
-import { CompactSizeLen, RawOutput, RawTx, RawWitness, Script, VarBytes } from './script.js';
-import type { IssuanceData } from './script.js';
-import { amt2val, val2amt, NETWORK, concatBytes, isBytes, equalBytes } from './utils.js';
-import type { Bytes } from './utils.js';
-import * as u from './utils.js';
-import { getInputType, toVsize, normalizeInput, getPrevOut } from './utxo.js'; // circular
+import { Address, OutScript, checkScript, tapLeafHash } from './payment.ts';
+import type { CustomScript } from './payment.ts';
+import * as psbt from './psbt.ts'; // circular
+import { CompactSizeLen, RawOutput, RawTx, RawWitness, Script, VarBytes } from './script.ts';
+import type { IssuanceData } from './script.ts';
+import { amt2val, val2amt, NETWORK, concatBytes, isBytes, equalBytes } from './utils.ts';
+import type { Bytes } from './utils.ts';
+import * as u from './utils.ts';
+import { getInputType, toVsize, normalizeInput, getPrevOut } from './utxo.ts'; // circular
 
 const EMPTY32: Uint8Array = new Uint8Array(32);
 const EMPTY_OUTPUT: P.UnwrapCoder<typeof RawOutput> = {
@@ -881,24 +881,39 @@ export class Transaction {
     this.outputs[idx] = this.normalizeOutput(output, this.outputs[idx], allowedFields);
   }
   addOutputAddress(address: string, amount: bigint, network = NETWORK, asset?: string): number {
-    if (!asset) asset = network.assetHash!;
-    const hashBytes = hex.decode(asset!);
-    // Construct 33-byte unconfidential asset: 0x01 prefix + reversed hash
-    const assetBytes = new Uint8Array(33);
-    assetBytes[0] = 0x01;
-    for (let i = 0; i < 32; i++) assetBytes[1 + i] = hashBytes[31 - i];
-    return this.addOutput({
-      asset: assetBytes,
-      nonce: new Uint8Array([0x00]),
-      script: OutScript.encode(Address(network).decode(address)),
-      value: amt2val(amount),
-    });
+    const script = OutScript.encode(Address(network).decode(address));
+    // Liquid: construct asset commitment and use value encoding
+    if (asset || network.assetHash) {
+      const assetHex = asset || network.assetHash!;
+      const hashBytes = hex.decode(assetHex);
+      // Construct 33-byte unconfidential asset: 0x01 prefix + reversed hash
+      const assetBytes = new Uint8Array(33);
+      assetBytes[0] = 0x01;
+      for (let i = 0; i < 32; i++) assetBytes[1 + i] = hashBytes[31 - i];
+      return this.addOutput({
+        asset: assetBytes,
+        nonce: new Uint8Array([0x00]),
+        script,
+        value: amt2val(amount),
+      });
+    }
+    // Bitcoin: simple script + amount
+    return this.addOutput({ script, amount });
   }
   // Utils
   get fee(): bigint {
-    let feeOutput = this.outputs.find((o) => o.nonce && o.script?.length === 0);
-    if (!feeOutput?.value) throw new Error('No fee output');
-    return val2amt(feeOutput.value);
+    // Liquid: fee is an explicit output with empty script and nonce
+    const feeOutput = this.outputs.find((o) => o.nonce && o.script?.length === 0);
+    if (feeOutput?.value) return val2amt(feeOutput.value);
+    // Bitcoin: fee = sum(inputs) - sum(outputs)
+    let res = 0n;
+    for (const i of this.inputs) {
+      const prevOut = getPrevOut(i);
+      if (!prevOut) throw new Error('Empty input amount');
+      res += (prevOut as any).amount;
+    }
+    for (const o of this.outputs) res -= (o as any).amount;
+    return res;
   }
 
   // Signing
