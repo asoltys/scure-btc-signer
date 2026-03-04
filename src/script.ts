@@ -290,6 +290,9 @@ export const RawOutput = P.struct({
   script: VarBytes,
 });
 
+// Bitcoin (non-Liquid) raw output format
+export const BtcRawOutput = P.struct({ amount: P.U64LE, script: VarBytes });
+
 export const RawInput: P.CoderType<{
   txid: Uint8Array;
   index: number;
@@ -396,3 +399,72 @@ function validateRawTx(tx: P.UnwrapCoder<typeof _RawTx>) {
   return tx;
 }
 export const RawTx = P.validate(_RawTx, validateRawTx);
+
+// Bitcoin (non-Liquid) raw transaction format
+const _BtcRawTx = P.struct({
+  version: P.I32LE,
+  segwitFlag: P.flag(new Uint8Array([0x00, 0x01])),
+  inputs: BTCArray(RawInput),
+  outputs: BTCArray(BtcRawOutput),
+  witnesses: P.flagged('segwitFlag', P.array('inputs/length', RawWitness)),
+  lockTime: P.U32LE,
+});
+export const BtcRawTx = P.validate(_BtcRawTx, (tx) => {
+  if (tx.segwitFlag && tx.witnesses && !tx.witnesses.length)
+    throw new Error('Segwit flag with empty witnesses array');
+  return tx;
+});
+
+function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+// Dual codec: auto-detects Bitcoin vs Liquid format for PSBT unsignedTx
+export const DualRawTx: P.CoderType<any> = {
+  encode(value: any): Uint8Array {
+    if (value.outputs?.length > 0 && 'asset' in value.outputs[0]) {
+      return RawTx.encode(value);
+    }
+    return BtcRawTx.encode(value);
+  },
+  decode(data: Uint8Array): any {
+    // Try BtcRawTx first with round-trip validation
+    try {
+      const btc = BtcRawTx.decode(data);
+      if (bytesEqual(BtcRawTx.encode(btc), data)) return btc;
+    } catch {}
+    return RawTx.decode(data);
+  },
+  encodeStream(w: P.Writer, value: any): void {
+    w.bytes(this.encode(value));
+  },
+  decodeStream(r: P.Reader): any {
+    const remaining = r.bytes(r.leftBytes);
+    return this.decode(remaining);
+  },
+} as any;
+
+// Dual codec: auto-detects Bitcoin vs Liquid output format
+export const DualRawOutput: P.CoderType<any> = {
+  encode(value: any): Uint8Array {
+    if ('asset' in value) return RawOutput.encode(value);
+    return BtcRawOutput.encode(value);
+  },
+  decode(data: Uint8Array): any {
+    // Try BtcRawOutput first with round-trip validation
+    try {
+      const btc = BtcRawOutput.decode(data);
+      if (bytesEqual(BtcRawOutput.encode(btc), data)) return btc;
+    } catch {}
+    return RawOutput.decode(data);
+  },
+  encodeStream(w: P.Writer, value: any): void {
+    w.bytes(this.encode(value));
+  },
+  decodeStream(r: P.Reader): any {
+    const remaining = r.bytes(r.leftBytes);
+    return this.decode(remaining);
+  },
+} as any;

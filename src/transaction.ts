@@ -4,7 +4,7 @@ import { hex } from '@scure/base';
 import { Address, OutScript, checkScript, tapLeafHash } from './payment.ts';
 import type { CustomScript } from './payment.ts';
 import * as psbt from './psbt.ts'; // circular
-import { CompactSizeLen, RawOutput, RawTx, RawWitness, Script, VarBytes } from './script.ts';
+import { BtcRawOutput, BtcRawTx, DualRawTx, CompactSizeLen, RawOutput, RawTx, RawWitness, Script, VarBytes } from './script.ts';
 import type { IssuanceData } from './script.ts';
 import { amt2val, val2amt, NETWORK, concatBytes, isBytes, equalBytes } from './utils.ts';
 import type { Bytes } from './utils.ts';
@@ -122,6 +122,19 @@ export enum SigHash {
   SINGLE_ANYONECANPAY = SignatureHash.SINGLE | SignatureHash.ANYONECANPAY,
 }
 
+// Extract value bytes from a prevOut (Bitcoin: encode bigint as U64LE, Liquid: use value bytes directly)
+function prevOutValue(prevOut: any): Uint8Array {
+  if (prevOut.value !== undefined) return prevOut.value; // Liquid: already bytes
+  if (prevOut.amount !== undefined) return Uint8Array.from(P.U64LE.encode(prevOut.amount)); // Bitcoin: bigint -> 8 byte LE
+  throw new Error('prevOut has no value or amount');
+}
+
+// Extract amount as bigint from a prevOut (Bitcoin: use amount directly, Liquid: decode from value bytes)
+function prevOutAmount(prevOut: any): bigint {
+  if (prevOut.amount !== undefined) return prevOut.amount; // Bitcoin
+  return val2amt(prevOut.value); // Liquid: decode 9-byte value
+}
+
 function getTaprootKeys(
   privKey: Bytes,
   pubKey: Bytes,
@@ -143,48 +156,51 @@ export type TransactionInputRequired = {
   index: number;
   sequence: number;
   finalScriptSig: Bytes;
-  witness: Witness;
-  issuanceRangeProof: Bytes;
-  inflationRangeProof: Bytes;
-  pegInWitness: Witness;
+  witness?: Witness;
+  issuanceRangeProof?: Bytes;
+  inflationRangeProof?: Bytes;
+  pegInWitness?: Witness;
   issuance?: IssuanceData;
   isPegin?: boolean;
 };
 
-// Force check amount/script
+// Force check amount/script — supports both Bitcoin and Liquid outputs
 function outputBeforeSign(i: psbt.TransactionOutput): psbt.TransactionOutputRequired {
-  if (
-    i.script === undefined ||
-    i.asset === undefined ||
-    i.value === undefined ||
-    i.nonce === undefined
-  ) {
-    throw new Error('Transaction/output: script, asset, value and nonce required');
+  if (i.script === undefined) throw new Error('Transaction/output: script required');
+  // Liquid output (has asset/value/nonce)
+  if (i.asset !== undefined && i.value !== undefined && i.nonce !== undefined) {
+    return { asset: i.asset, value: i.value, nonce: i.nonce, script: i.script };
   }
-  return { asset: i.asset, value: i.value, nonce: i.nonce, script: i.script };
+  // Bitcoin output (has amount)
+  if (i.amount !== undefined) {
+    return { script: i.script, amount: i.amount };
+  }
+  throw new Error('Transaction/output: amount (Bitcoin) or asset/value/nonce (Liquid) required');
+}
+
+function isLiquidOutput(o: psbt.TransactionOutputRequired): o is { script: Bytes; asset: Bytes; value: Bytes; nonce: Bytes } {
+  return 'asset' in o;
+}
+
+function encodeOutput(o: psbt.TransactionOutputRequired): Uint8Array {
+  if (isLiquidOutput(o)) return Uint8Array.from(RawOutput.encode(o));
+  return Uint8Array.from(BtcRawOutput.encode(o));
 }
 
 // Force check index/txid/sequence
 export function inputBeforeSign(i: psbt.TransactionInput): TransactionInputRequired {
-  if (
-    i.txid === undefined ||
-    i.index === undefined ||
-    i.issuanceRangeProof === undefined ||
-    i.inflationRangeProof === undefined ||
-    i.witness === undefined ||
-    i.pegInWitness === undefined
-  )
-    throw new Error('Transaction/input: txid, index, issuanceRangeProof, inflationRangeProof witness and pegInWitness required');
+  if (i.txid === undefined || i.index === undefined)
+    throw new Error('Transaction/input: txid and index required');
   const result: TransactionInputRequired = {
     txid: i.txid,
     index: i.index,
     sequence: def(i.sequence, DEFAULT_SEQUENCE),
     finalScriptSig: def(i.finalScriptSig, P.EMPTY),
-    witness: i.witness,
-    issuanceRangeProof: i.issuanceRangeProof,
-    inflationRangeProof: i.inflationRangeProof,
-    pegInWitness: i.pegInWitness,
   };
+  if (i.witness) result.witness = i.witness;
+  if (i.issuanceRangeProof) result.issuanceRangeProof = i.issuanceRangeProof;
+  if (i.inflationRangeProof) result.inflationRangeProof = i.inflationRangeProof;
+  if (i.pegInWitness) result.pegInWitness = i.pegInWitness;
   if (i.issuance) result.issuance = i.issuance;
   if (i.isPegin) result.isPegin = i.isPegin;
   return result;
@@ -283,7 +299,16 @@ export class Transaction {
 
   // Import
   static fromRaw(raw: Bytes, opts: TxOpts = {}) {
-    const parsed = RawTx.decode(raw);
+    let parsed;
+    let isLiquid = false;
+    try {
+      // Try Bitcoin format first
+      parsed = BtcRawTx.decode(raw);
+    } catch {
+      // Fall back to Liquid format
+      parsed = RawTx.decode(raw);
+      isLiquid = true;
+    }
     const tx = new Transaction({ ...opts, version: parsed.version, lockTime: parsed.lockTime });
     tx.outputs = parsed.outputs;
     tx.inputs = parsed.inputs;
@@ -291,10 +316,14 @@ export class Transaction {
     if (parsed.witnesses) {
       for (let i = 0; i < parsed.witnesses.length; i++) {
         const w = parsed.witnesses[i];
-        tx.inputs[i].witness = w.witness;
-        tx.inputs[i].issuanceRangeProof = w.issuanceRangeProof;
-        tx.inputs[i].inflationRangeProof = w.inflationRangeProof;
-        tx.inputs[i].pegInWitness = w.pegInWitness;
+        if (isLiquid) {
+          tx.inputs[i].witness = (w as any).witness;
+          tx.inputs[i].issuanceRangeProof = (w as any).issuanceRangeProof;
+          tx.inputs[i].inflationRangeProof = (w as any).inflationRangeProof;
+          tx.inputs[i].pegInWitness = (w as any).pegInWitness;
+        } else {
+          tx.inputs[i].finalScriptWitness = w as any;
+        }
       }
     }
 
@@ -574,7 +603,7 @@ export class Transaction {
     const outputs = this.outputs.map((i) => psbt.cleanPSBTFields(PSBTVersion, psbt.PSBTOutput, i));
     const global = { ...this.global };
     if (PSBTVersion === 0) {
-      global.unsignedTx = RawTx.decode(this.unsignedTx);
+      global.unsignedTx = DualRawTx.decode(this.unsignedTx);
       delete global.fallbackLocktime;
       delete global.txVersion;
     } else {
@@ -687,7 +716,7 @@ export class Transaction {
   get hasWitnesses(): boolean {
         let out = false;
         for (const i of this.inputs)
-            if (i.witness && i.witness.length)
+            if ((i.finalScriptWitness && i.finalScriptWitness.length) || (i.witness && i.witness.length))
                 out = true;
         return out;
   }
@@ -712,15 +741,38 @@ export class Transaction {
   get vsize(): number {
     return toVsize(this.weight);
   }
+  private get isLiquid(): boolean {
+    return this.outputs.some((o) => o.asset !== undefined);
+  }
   toBytes(withScriptSig = false, withWitness = false) {
+    const outputs = this.outputs.map(outputBeforeSign);
+    const inputsMapped = this.inputs.map(inputBeforeSign).map((i) => ({
+      ...i,
+      finalScriptSig: (withScriptSig && i.finalScriptSig) || P.EMPTY,
+    }));
+
+    if (!this.isLiquid) {
+      // Bitcoin path
+      const tx = {
+        version: this.version,
+        segwitFlag: withWitness && this.hasWitnesses,
+        inputs: inputsMapped,
+        outputs,
+        lockTime: this.lockTime,
+        witnesses: [] as Uint8Array[][],
+      };
+      if (withWitness && this.hasWitnesses) {
+        tx.witnesses = this.inputs.map((i) => i.finalScriptWitness || []);
+      }
+      return BtcRawTx.encode(tx as any);
+    }
+
+    // Liquid path
     let tx: RawTx = {
       version: this.version,
       segwitFlag: withWitness && this.hasWitnesses,
-      inputs: this.inputs.map(inputBeforeSign).map((i) => ({
-        ...i,
-        finalScriptSig: (withScriptSig && i.finalScriptSig) || P.EMPTY,
-      })),
-      outputs: this.outputs.map(outputBeforeSign),
+      inputs: inputsMapped,
+      outputs,
       lockTime: this.lockTime,
       witnesses: [],
       outs: [],
@@ -825,12 +877,37 @@ export class Transaction {
     cur?: psbt.TransactionOutput,
     allowedFields?: (keyof typeof psbt.PSBTOutput)[]
   ): psbt.TransactionOutput {
-    let { script, value } = o;
+    let { script, amount, value } = o;
+    const isLiquid = value !== undefined || cur?.value !== undefined;
+    if (!isLiquid) {
+      // Bitcoin path: use amount
+      if (amount === undefined) amount = cur?.amount;
+      if (typeof amount !== 'bigint')
+        throw new Error(
+          `Wrong amount type, should be of type bigint in sats, but got ${amount} of type ${typeof amount}`
+        );
+      if (typeof script === 'string') script = hex.decode(script);
+      if (script === undefined) script = cur?.script;
+      let res: psbt.PSBTKeyMapKeys<typeof psbt.PSBTOutput> = { ...cur, ...o, amount, script };
+      if (res.amount === undefined) delete res.amount;
+      res = psbt.mergeKeyMap(psbt.PSBTOutput, res, cur, allowedFields);
+      psbt.PSBTOutputCoder.encode(res);
+      if (
+        res.script &&
+        !this.opts.allowUnknownOutputs &&
+        OutScript.decode(res.script).type === 'unknown'
+      ) {
+        throw new Error(
+          'Transaction/output: unknown output script type, there is a chance that input is unspendable. Pass allowUnknownOutputs=true, if you sure'
+        );
+      }
+      if (!this.opts.disableScriptCheck) checkScript(res.script, res.redeemScript, res.witnessScript);
+      return res;
+    }
+    // Liquid path: use value/asset/nonce
     if (!value) throw new Error('Value must be defined');
-
     // Only convert to amount if unconfidential (9 bytes with 0x01 prefix)
     const isUnconfidential = value instanceof Uint8Array && value.length === 9 && value[0] === 0x01;
-    let amount: bigint | undefined;
     if (isUnconfidential) {
       amount = val2amt(value);
     }
@@ -946,17 +1023,19 @@ export class Transaction {
     else if (isSingle) {
       outputs = outputs.slice(0, idx).fill(EMPTY_OUTPUT).concat([outputs[idx]]);
     }
-    const tmpTx = RawTx.encode({
+    const txData = {
       lockTime: this.lockTime,
       version: this.version,
       segwitFlag: false,
       inputs,
       outputs,
-    });
+    };
+    const tmpTx = this.isLiquid ? RawTx.encode(txData as any) : BtcRawTx.encode(txData as any);
     return u.sha256x2(tmpTx, P.I32LE.encode(hashType));
   }
   preimageWitnessV0(idx: number, prevOutScript: Bytes, hashType: number, value: Bytes) {
     const { isAny, isNone, isSingle } = unpackSighash(hashType);
+    const isLiquid = this.isLiquid;
     let inputHash = EMPTY32;
     let sequenceHash = EMPTY32;
     let issuanceHash = EMPTY32;
@@ -965,27 +1044,29 @@ export class Transaction {
     const outputs = this.outputs.map(outputBeforeSign);
     if (!isAny) {
       inputHash = u.sha256x2(...inputs.map((i) => Uint8Array.from(TxHashIdx.encode(i))));
-      issuanceHash = u.sha256x2(...inputs.map((inp) => {
-        if (inp.issuance) {
-          return concatBytes(
-            inp.issuance.assetBlindingNonce,
-            inp.issuance.assetEntropy,
-            inp.issuance.assetAmount,
-            inp.issuance.tokenAmount
-          );
-        }
-        return new Uint8Array([0x00]);
-      }));
+      if (isLiquid) {
+        issuanceHash = u.sha256x2(...inputs.map((inp) => {
+          if (inp.issuance) {
+            return concatBytes(
+              inp.issuance.assetBlindingNonce,
+              inp.issuance.assetEntropy,
+              inp.issuance.assetAmount,
+              inp.issuance.tokenAmount
+            );
+          }
+          return new Uint8Array([0x00]);
+        }));
+      }
     }
     if (!isAny && !isSingle && !isNone)
       sequenceHash = u.sha256x2(...inputs.map((i) => Uint8Array.from(P.U32LE.encode(i.sequence))));
     if (!isSingle && !isNone) {
-      outputHash = u.sha256x2(...outputs.map((o) => Uint8Array.from(RawOutput.encode(o))));
+      outputHash = u.sha256x2(...outputs.map((o) => encodeOutput(o)));
     } else if (isSingle && idx < outputs.length)
-      outputHash = u.sha256x2(Uint8Array.from(RawOutput.encode(outputs[idx])));
+      outputHash = u.sha256x2(encodeOutput(outputs[idx]));
     const input = inputs[idx];
     const issuanceParts: Uint8Array[] = [];
-    if (input.issuance) {
+    if (isLiquid && input.issuance) {
       issuanceParts.push(
         input.issuance.assetBlindingNonce,
         input.issuance.assetEntropy,
@@ -993,11 +1074,13 @@ export class Transaction {
         input.issuance.tokenAmount
       );
     }
-    return u.sha256x2(
+    const hashParts: Uint8Array[] = [
       P.I32LE.encode(this.version),
       inputHash,
       sequenceHash,
-      issuanceHash,
+    ];
+    if (isLiquid) hashParts.push(issuanceHash);
+    hashParts.push(
       P.bytes(32, true).encode(input.txid),
       P.U32LE.encode(input.index),
       VarBytes.encode(prevOutScript),
@@ -1008,6 +1091,7 @@ export class Transaction {
       P.U32LE.encode(this.lockTime),
       P.U32LE.encode(hashType)
     );
+    return u.sha256x2(...hashParts);
   }
   preimageWitnessV1(
     idx: number,
@@ -1044,7 +1128,7 @@ export class Transaction {
       );
     }
     if (outType === SignatureHash.ALL) {
-      out.push(u.sha256(concatBytes(...outputs.map(RawOutput.encode))));
+      out.push(u.sha256(concatBytes(...outputs.map(encodeOutput))));
     }
     const spendType = (annex ? 1 : 0) | (leafScript ? 2 : 0);
     out.push(new Uint8Array([spendType]));
@@ -1059,7 +1143,7 @@ export class Transaction {
     } else out.push(P.U32LE.encode(idx));
     if (spendType & 1) out.push(u.sha256(VarBytes.encode(annex || P.EMPTY)));
     if (outType === SignatureHash.SINGLE)
-      out.push(idx < outputs.length ? u.sha256(RawOutput.encode(outputs[idx])) : EMPTY32);
+      out.push(idx < outputs.length ? u.sha256(encodeOutput(outputs[idx])) : EMPTY32);
     if (leafScript)
       out.push(tapLeafHash(leafScript, leafVer), P.U8.encode(0), P.I32LE.encode(codeSeparator));
     return u.tagSchnorr('TapSighash', ...out);
@@ -1116,7 +1200,7 @@ export class Transaction {
       if (input.tapBip32Derivation) throw new Error('tapBip32Derivation unsupported');
       const prevOuts = this.inputs.map(getPrevOut);
       const prevOutScript = prevOuts.map((i) => i.script);
-      const amount = prevOuts.map((i) => val2amt(i.value));
+      const amount = prevOuts.map((i) => prevOutAmount(i));
       let signed = false;
       let schnorrPub = u.pubSchnorr(privateKey);
       let merkleRoot = input.tapMerkleRoot || P.EMPTY;
@@ -1195,7 +1279,7 @@ export class Transaction {
         // If wpkh OR sh-wpkh, wsh-wpkh is impossible, so looks ok
         if (inputType.last.type === 'wpkh')
           script = OutScript.encode({ type: 'pkh', hash: inputType.last.hash });
-        hash = this.preimageWitnessV0(idx, script, sighash, prevOut.value);
+        hash = this.preimageWitnessV0(idx, script, sighash, prevOutValue(prevOut));
       } else throw new Error(`Transaction/sign: unknown tx type: ${inputType.txType}`);
       const sig = u.signECDSA(hash, privateKey, this.opts.lowR);
       this.updateInput(
@@ -1372,8 +1456,11 @@ export class Transaction {
 
     if (!finalScriptSig && !finalScriptWitness) throw new Error('Unknown error finalizing input');
     if (finalScriptSig) input.finalScriptSig = finalScriptSig;
-    if (finalScriptWitness) input.witness = finalScriptWitness;
-    input.pegInWitness = [];
+    if (finalScriptWitness) {
+      input.finalScriptWitness = finalScriptWitness;
+      input.witness = finalScriptWitness; // Liquid uses witness field
+    }
+    if (this.isLiquid) input.pegInWitness = [];
     cleanFinalInput(input);
   }
   finalize() {
@@ -1400,8 +1487,8 @@ export class Transaction {
         );
       }
     }
-    const thisUnsigned = this.global.unsignedTx ? RawTx.encode(this.global.unsignedTx) : P.EMPTY;
-    const otherUnsigned = other.global.unsignedTx ? RawTx.encode(other.global.unsignedTx) : P.EMPTY;
+    const thisUnsigned = this.global.unsignedTx ? DualRawTx.encode(this.global.unsignedTx) : P.EMPTY;
+    const otherUnsigned = other.global.unsignedTx ? DualRawTx.encode(other.global.unsignedTx) : P.EMPTY;
     if (!equalBytes(thisUnsigned, otherUnsigned))
       throw new Error(`Transaction/combine: different unsigned tx`);
     this.global = psbt.mergeKeyMap(psbt.PSBTGlobal, this.global, other.global);

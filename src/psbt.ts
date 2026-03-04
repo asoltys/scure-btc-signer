@@ -1,6 +1,6 @@
 import { hex } from '@scure/base';
 import * as P from 'micro-packed';
-import { CompactSize, CompactSizeLen, RawOutput, RawTx, RawWitness, VarBytes } from './script.ts';
+import { CompactSize, CompactSizeLen, DualRawOutput, DualRawTx, RawWitness, VarBytes } from './script.ts';
 import type { IssuanceData } from './script.ts';
 import { Transaction } from './transaction.ts'; // circular
 import { compareBytes, PubT, validatePubkey, equalBytes } from './utils.ts';
@@ -62,7 +62,7 @@ const Bytes32 = P.bytes(32);
 // Tables from BIP-0174 (https://github.com/bitcoin/bips/blob/master/bip-0174.mediawiki)
 // prettier-ignore
 export const PSBTGlobal = {
-  unsignedTx:       [0x00, false,      RawTx,          [0], [0],    false],
+  unsignedTx:       [0x00, false,      DualRawTx,      [0], [0],    false],
   xpub:             [0x01, GlobalXPUB, BIP32Der,       [],  [0, 2], false],
   txVersion:        [0x02, false,      P.U32LE,        [2], [2],    false],
   fallbackLocktime: [0x03, false,      P.U32LE,        [],  [2],    false],
@@ -74,8 +74,8 @@ export const PSBTGlobal = {
 } as const;
 // prettier-ignore
 export const PSBTInput = {
-  nonWitnessUtxo:         [0x00, false,               RawTx,            [],  [0, 2], false],
-  witnessUtxo:            [0x01, false,               RawOutput,        [],  [0, 2], false],
+  nonWitnessUtxo:         [0x00, false,               DualRawTx,        [],  [0, 2], false],
+  witnessUtxo:            [0x01, false,               DualRawOutput,    [],  [0, 2], false],
   partialSig:             [0x02, PubKeyECDSA,         BytesInf,         [],  [0, 2], false],
   sighashType:            [0x03, false,               P.U32LE,          [],  [0, 2], false],
   redeemScript:           [0x04, false,               BytesInf,         [],  [0, 2], false],
@@ -113,6 +113,7 @@ export const PSBTInputFinalKeys: (keyof TransactionInput)[] = [
     'witnessUtxo',
     'nonWitnessUtxo',
     'finalScriptSig',
+    'finalScriptWitness',
     'inflationRangeProof',
     'issuanceRangeProof',
     'witness',
@@ -284,11 +285,19 @@ export const PSBTInputCoder = P.validate(PSBTKeyMap(PSBTInput), (i) => {
     const last = i.nonWitnessUtxo.outputs.length - 1;
     if (i.index > last) throw new Error(`validateInput: index(${i.index}) not in nonWitnessUtxo`);
     const prevOut = i.nonWitnessUtxo.outputs[i.index];
-    if (
-      i.witnessUtxo &&
-      (!equalBytes(i.witnessUtxo.script, prevOut.script) || !equalBytes(i.witnessUtxo.value, prevOut.value))
-    )
-      throw new Error('validateInput: witnessUtxo different from nonWitnessUtxo');
+    if (i.witnessUtxo) {
+      const wScript = i.witnessUtxo.script;
+      const pScript = prevOut.script;
+      // Compare value/amount depending on format (Liquid uses value, Bitcoin uses amount)
+      const wVal = i.witnessUtxo.value ?? i.witnessUtxo.amount;
+      const pVal = prevOut.value ?? prevOut.amount;
+      if (wVal !== undefined && pVal !== undefined) {
+        const wBytes = wVal instanceof Uint8Array ? wVal : P.U64LE.encode(wVal);
+        const pBytes = pVal instanceof Uint8Array ? pVal : P.U64LE.encode(pVal);
+        if (!equalBytes(wScript, pScript) || !equalBytes(wBytes, pBytes))
+          throw new Error('validateInput: witnessUtxo different from nonWitnessUtxo');
+      }
+    }
   }
   if (i.tapLeafScript) {
     // tap leaf version appears here twice: in control block and at the end of script
@@ -311,7 +320,7 @@ export const PSBTInputCoder = P.validate(PSBTKeyMap(PSBTInput), (i) => {
     //   in case user wants to use wrong input by mistake
     // - Worst case: tx will be rejected by nodes. Still better than disallowing user
     //   to spend real input, no matter how broken it looks
-    const tx = Transaction.fromRaw(RawTx.encode(i.nonWitnessUtxo), {
+    const tx = Transaction.fromRaw(DualRawTx.encode(i.nonWitnessUtxo), {
       allowUnknownOutputs: true,
       disableScriptCheck: true,
       allowUnknownInputs: true,
@@ -350,12 +359,9 @@ export const PSBTOutputCoder = P.validate(PSBTKeyMap(PSBTOutput), (o) => {
 
 export type TransactionOutput = P.UnwrapCoder<typeof PSBTOutputCoder>;
 export type TransactionOutputUpdate = ExtendType<TransactionOutput, { script?: string }>;
-export type TransactionOutputRequired = {
-  asset: Bytes,
-  value: Bytes,
-  nonce: Bytes,
-  script: Bytes;
-};
+export type TransactionOutputRequired =
+  | { script: Bytes; amount: bigint }
+  | { script: Bytes; asset: Bytes; value: Bytes; nonce: Bytes };
 
 const PSBTGlobalCoder = P.validate(PSBTKeyMap(PSBTGlobal), (g) => {
   const version = g.version || 0;

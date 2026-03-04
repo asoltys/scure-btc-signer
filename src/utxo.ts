@@ -3,7 +3,7 @@ import * as P from 'micro-packed';
 import { Address, OutScript, checkScript, tapLeafHash } from './payment.ts';
 import type { CustomScript } from './payment.ts';
 import * as psbt from './psbt.ts';
-import { CompactSizeLen, RawOutput, RawTx, RawWitness, Script, VarBytes } from './script.ts';
+import { BtcRawTx, CompactSizeLen, RawOutput, RawTx, RawWitness, Script, VarBytes } from './script.ts';
 import { DEFAULT_SEQUENCE, inputBeforeSign, SignatureHash, Transaction } from './transaction.ts'; // circular
 import type { TxOpts } from './transaction.ts';
 import {
@@ -38,14 +38,17 @@ export function normalizeInput(
   // like hex looking string accidentally passed, however, in case of nonWitnessUtxo
   // it is better to expect string, since constructing this complex object will be
   // difficult for user
-  if (typeof nonWitnessUtxo === 'string') nonWitnessUtxo = hex.decode(nonWitnessUtxo);
-  if (isBytes(nonWitnessUtxo)) nonWitnessUtxo = RawTx.decode(nonWitnessUtxo);
+  if (typeof nonWitnessUtxo === 'string') nonWitnessUtxo = hex.decode(nonWitnessUtxo) as any;
+  if (isBytes(nonWitnessUtxo as any)) {
+    try { nonWitnessUtxo = BtcRawTx.decode(nonWitnessUtxo as any) as any; }
+    catch { nonWitnessUtxo = RawTx.decode(nonWitnessUtxo as any); }
+  }
   if (!('nonWitnessUtxo' in i) && nonWitnessUtxo === undefined)
     nonWitnessUtxo = cur?.nonWitnessUtxo;
   if (typeof txid === 'string') txid = hex.decode(txid);
   // TODO: if we have nonWitnessUtxo, we can extract txId from here
   if (txid === undefined) txid = cur?.txid;
-  let res: psbt.PSBTKeyMapKeys<typeof psbt.PSBTInput> = { ...cur, ...i, nonWitnessUtxo, txid };
+  let res: psbt.PSBTKeyMapKeys<typeof psbt.PSBTInput> = { ...cur, ...i, nonWitnessUtxo: nonWitnessUtxo as any, txid };
   if (!('nonWitnessUtxo' in i) && res.nonWitnessUtxo === undefined) delete res.nonWitnessUtxo;
   if (res.sequence === undefined) res.sequence = DEFAULT_SEQUENCE;
   if (res.tapMerkleRoot === null) delete res.tapMerkleRoot;
@@ -58,10 +61,11 @@ export function normalizeInput(
   else if (res.witnessUtxo) prevOut = res.witnessUtxo;
   if (prevOut && !disableScriptCheck)
     checkScript(prevOut && prevOut.script, res.redeemScript, res.witnessScript);
-  res.witness = i.witness || [new Uint8Array([])]
-  res.pegInWitness = i.pegInWitness || [new Uint8Array([])]
-  res.issuanceRangeProof = i.issuanceRangeProof || new Uint8Array([])
-  res.inflationRangeProof = i.inflationRangeProof || new Uint8Array([])
+  // Liquid-specific witness fields — only set defaults for Liquid inputs
+  if (i.witness) res.witness = i.witness;
+  if (i.pegInWitness) res.pegInWitness = i.pegInWitness;
+  if (i.issuanceRangeProof) res.issuanceRangeProof = i.issuanceRangeProof;
+  if (i.inflationRangeProof) res.inflationRangeProof = i.inflationRangeProof;
   const result = res as psbt.TransactionInput;
   if (i.issuance) result.issuance = i.issuance;
   if (i.isPegin) result.isPegin = i.isPegin;
@@ -381,8 +385,9 @@ export class _Estimator {
       const inputType = getInputType(normalized, opts.allowLegacyWitnessUtxo);
       const prev = getPrevOut(normalized);
       const estimate = estimateInput(inputType, normalized, this.opts);
-      const value = val2amt(prev.value) - opts.feePerByte * BigInt(toVsize(estimate.weight)); // value = amount-fee
-      return { inputType, normalized, amount: val2amt(prev.value), value, estimate };
+      const prevAmount = (prev as any).amount !== undefined ? (prev as any).amount : val2amt(prev.value);
+      const value = prevAmount - opts.feePerByte * BigInt(toVsize(estimate.weight)); // value = amount-fee
+      return { inputType, normalized, amount: prevAmount, value, estimate };
     });
   }
   private checkInputIdx(idx: number) {
